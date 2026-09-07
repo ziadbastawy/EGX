@@ -4,7 +4,7 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from "vue";
 const props = defineProps({
   quote: { type: Object, required: true },
   lang: { type: String, default: "ar" },
-  locale: { type: String, default: "ar-EG" },
+  locale: { type: String, default: "ar-EG-u-nu-latn" },
   asOfLabel: String,
   hoverLabel: String,
   hint: String,

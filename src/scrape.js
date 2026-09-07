@@ -92,8 +92,14 @@ export async function runScrape(options = {}) {
 
 if (isMain(import.meta.url)) {
   runScrape()
-    .then(({ errors }) => {
-      if (errors.length) process.exitCode = 1;
+    .then(({ payload, errors }) => {
+      // Partial symbol failures are normal — only fail the process if nothing saved.
+      if (!(payload?.results?.length)) {
+        console.error("No quotes saved — treating scrape as failed.");
+        process.exitCode = 1;
+      } else if (errors.length) {
+        console.warn(`Completed with ${errors.length} symbol error(s).`);
+      }
     })
     .catch((err) => {
       console.error(err);

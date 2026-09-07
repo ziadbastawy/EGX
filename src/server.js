@@ -7,17 +7,29 @@ import { Agent, CursorAgentError, JsonlLocalAgentStore } from "@cursor/sdk";
 import {
   analyzeQuote,
   analyzeUniverse,
+  applyFundamentalScalpBoost,
   compactForAi,
   scanAnalyses,
 } from "./lib/indicators.js";
 import { buildCompanyProfile } from "./lib/companyContext.js";
 import { fetchMubasherStock } from "./lib/mubasher.js";
+import { buildPriceDepth } from "./lib/priceDepth.js";
+import { scoreThndrFunds } from "./lib/thndrFunds.js";
+import { runFundsPhotoExtract } from "./lib/runFundsPhoto.js";
+import { runFundsAdvice } from "./lib/runFundsAdvice.js";
+import { runAiPing } from "./lib/runAiPing.js";
+import {
+  LATEST_PATH,
+  ensureMarketData,
+  marketStatus,
+  readLatestMeta,
+  startScrape,
+} from "./lib/ensureMarketData.js";
 
 dotenv.config({ path: path.join(path.dirname(fileURLToPath(import.meta.url)), "..", ".env") });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, "..");
-const LATEST_PATH = path.join(ROOT, "web", "public", "latest.json");
 const AGENT_STORE_PATH = path.join(ROOT, ".cursor-agents");
 // Render/Railway set PORT; local/dev uses API_PORT (default 8787).
 const PORT = Number(process.env.PORT || process.env.API_PORT) || 8787;
@@ -38,10 +50,19 @@ function sendJson(res, status, body) {
   res.end(payload);
 }
 
-function readBody(req) {
+function readBody(req, { maxBytes = 8_000_000 } = {}) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (c) => chunks.push(c));
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > maxBytes) {
+        reject(Object.assign(new Error("Request too large"), { status: 413 }));
+        req.destroy();
+        return;
+      }
+      chunks.push(c);
+    });
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
       if (!raw.trim()) return resolve({});
@@ -137,13 +158,35 @@ function fundamentalsBlock(fundamentals) {
 }
 
 async function loadMarket() {
-  const raw = await fs.readFile(LATEST_PATH, "utf8");
-  const data = JSON.parse(raw);
-  return {
-    results: data.results || [],
-    scrapedAt: data.scrapedAt,
-    range: data.range,
-  };
+  try {
+    const raw = await fs.readFile(LATEST_PATH, "utf8");
+    const data = JSON.parse(raw);
+    const results = data.results || [];
+    if (!results.length) {
+      const err = new Error("Market data is empty — scrape in progress or failed");
+      err.status = 503;
+      err.retryable = true;
+      ensureMarketData().catch(() => {});
+      throw err;
+    }
+    return {
+      results,
+      scrapedAt: data.scrapedAt,
+      range: data.range,
+    };
+  } catch (err) {
+    if (err.status) throw err;
+    if (err.code === "ENOENT") {
+      const missing = new Error(
+        "Market data not ready — scrape has been started; retry in a minute"
+      );
+      missing.status = 503;
+      missing.retryable = true;
+      ensureMarketData().catch(() => {});
+      throw missing;
+    }
+    throw err;
+  }
 }
 
 const FUNDAMENTALS_PATH = path.join(ROOT, "web", "public", "fundamentals.json");
@@ -192,9 +235,12 @@ function attachFundamentals(list, fundMap) {
       .replace(/\.CA$/i, "")
       .toUpperCase();
     const f = fundMap.get(code);
-    return f ? { ...item, fundamentals: f } : item;
+    const withFund = f ? { ...item, fundamentals: f } : item;
+    return applyFundamentalScalpBoost(withFund);
   });
 }
+
+const SCAN_TYPES = ["top", "rsi", "macd", "breakout", "accumulation", "scalp", "week"];
 
 function findQuote(results, ticker) {
   const needle = normalizeTicker(ticker);
@@ -229,14 +275,14 @@ function extractJson(text) {
  *  - "openai"           → ChatGPT via the OpenAI Chat Completions API
  * Returns the raw text reply (expected to contain a single JSON object).
  */
-async function runAgent(prompt, ai = {}) {
+async function runAgent(prompt, ai = {}, opts = {}) {
   const provider = normalizeProvider(ai.provider);
-  if (provider === "openai") return runOpenAiChat(prompt, ai);
-  return runCursorAgent(prompt, ai);
+  if (provider === "openai") return runOpenAiChat(prompt, ai, opts);
+  return runCursorAgent(prompt, ai, opts);
 }
 
 /** OpenAI ChatGPT completion — asks for a single JSON object back. */
-async function runOpenAiChat(prompt, ai = {}) {
+async function runOpenAiChat(prompt, ai = {}, opts = {}) {
   const apiKey = ai.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
   if (!apiKey) {
     throw Object.assign(new Error("OpenAI API key is missing (set it in Settings)"), {
@@ -244,6 +290,12 @@ async function runOpenAiChat(prompt, ai = {}) {
     });
   }
   const model = ai.model?.trim() || process.env.OPENAI_MODEL?.trim() || "gpt-4o-mini";
+  const userContent = opts.imageDataUrl
+    ? [
+        { type: "text", text: prompt },
+        { type: "image_url", image_url: { url: opts.imageDataUrl, detail: "high" } },
+      ]
+    : prompt;
 
   let res;
 
@@ -260,7 +312,7 @@ console.log("API Key length:", apiKey.length);
       },
       body: JSON.stringify({
         model,
-        temperature: 0.3,
+        temperature: opts.imageDataUrl ? 0.1 : 0.3,
         response_format: { type: "json_object" },
         messages: [
           {
@@ -268,7 +320,7 @@ console.log("API Key length:", apiKey.length);
             content:
               "You are a rigorous Egyptian Exchange (EGX) market analyst. Follow the user's instructions exactly and reply with a SINGLE JSON object only — no markdown, no code fences, no preamble.",
           },
-          { role: "user", content: prompt },
+          { role: "user", content: userContent },
         ],
       }),
     });
@@ -293,7 +345,7 @@ console.log("API Key length:", apiKey.length);
 }
 
 /** Collect assistant text + any createPlan body (plan mode often parks JSON only in the plan). */
-async function runCursorAgent(prompt, ai = {}) {
+async function runCursorAgent(prompt, ai = {}, opts = {}) {
   const apiKey = ai.apiKey?.trim() || process.env.CURSOR_API_KEY?.trim();
   if (!apiKey) {
     throw Object.assign(
@@ -301,41 +353,64 @@ async function runCursorAgent(prompt, ai = {}) {
       { status: 400 }
     );
   }
-  await using agent = await Agent.create({
-    apiKey,
-    model: { id: ai.model?.trim() || "composer-2.5" },
-    local: { cwd: ROOT, store: agentStore },
-  });
+  const prevKey = process.env.CURSOR_API_KEY;
+  process.env.CURSOR_API_KEY = apiKey;
+  let agent;
+  try {
+    agent = await Agent.create({
+      apiKey,
+      model: { id: ai.model?.trim() || "composer-2.5" },
+      local: { cwd: ROOT, store: agentStore },
+      tools: opts.imagePath ? ["read"] : [],
+    });
+  } catch (err) {
+    if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+    else process.env.CURSOR_API_KEY = prevKey;
+    throw err;
+  }
 
-  const run = await agent.send(prompt);
-  let assistantText = "";
-  let planText = "";
+  try {
+    const run = await agent.send(prompt);
+    let assistantText = "";
+    let planText = "";
 
-  for await (const event of run.stream()) {
-    if (event.type === "assistant") {
-      for (const block of event.message?.content || []) {
-        if (block.type === "text" && block.text) assistantText += block.text;
+    for await (const event of run.stream()) {
+      if (event.type === "assistant") {
+        for (const block of event.message?.content || []) {
+          if (block.type === "text" && block.text) assistantText += block.text;
+        }
+        continue;
       }
-      continue;
+      if (event.type === "tool_call" && event.name === "createPlan") {
+        const plan = event.args?.plan;
+        if (typeof plan === "string" && plan.length > planText.length) planText = plan;
+      }
     }
-    if (event.type === "tool_call" && event.name === "createPlan") {
-      const plan = event.args?.plan;
-      if (typeof plan === "string" && plan.length > planText.length) planText = plan;
+
+    const result = await run.wait();
+    if (result.status !== "finished") {
+      throw Object.assign(
+        new Error(result.error?.message || `Agent status: ${result.status}`),
+        { status: 502 }
+      );
+    }
+
+    const candidates = [result.result || "", assistantText, planText].filter(Boolean);
+    const withJson = candidates.find((t) => extractJson(t)?.action || extractJson(t)?.holdings);
+    return withJson || candidates.sort((a, b) => b.length - a.length)[0] || "";
+  } finally {
+    if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+    else process.env.CURSOR_API_KEY = prevKey;
+    try {
+      if (agent && typeof agent[Symbol.asyncDispose] === "function") {
+        await agent[Symbol.asyncDispose]();
+      } else if (agent && typeof agent.close === "function") {
+        await agent.close();
+      }
+    } catch {
+      /* ignore dispose errors */
     }
   }
-
-  const result = await run.wait();
-  if (result.status !== "finished") {
-    throw Object.assign(
-      new Error(result.error?.message || `Agent status: ${result.status}`),
-      { status: 502 }
-    );
-  }
-
-  // Prefer the chunk that actually contains JSON; plan-mode narrations are useless alone.
-  const candidates = [result.result || "", assistantText, planText].filter(Boolean);
-  const withJson = candidates.find((t) => extractJson(t)?.action);
-  return withJson || candidates.sort((a, b) => b.length - a.length)[0] || "";
 }
 
 function normalizePick(p, fallbackConfidence = 50) {
@@ -344,8 +419,12 @@ function normalizePick(p, fallbackConfidence = 50) {
     .toUpperCase()
     .replace(/\.CA$/i, "");
   if (!ticker) return null;
+  const nameAr = String(p.nameAr || p.name || "").trim();
+  const nameEn = String(p.nameEn || p.name || "").trim();
   return {
     ticker,
+    nameAr: nameAr ? nameAr.slice(0, 120) : undefined,
+    nameEn: nameEn ? nameEn.slice(0, 120) : undefined,
     action: ["buy", "sell", "hold"].includes(p.action) ? p.action : "hold",
     confidence: Math.max(0, Math.min(100, Number(p.confidence) || fallbackConfidence)),
     entry: p.entry ?? null,
@@ -771,6 +850,56 @@ Respond ONLY with valid JSON:
   }
 }
 
+function compactScreenForAi(rows, planKey) {
+  return (rows || []).map((a) => {
+    const plan = a[planKey] || {};
+    return {
+      ticker: a.ticker.replace(/\.CA$/i, ""),
+      nameAr: a.nameAr,
+      nameEn: a.nameEn,
+      price: a.price,
+      buy: plan.buy,
+      sell: plan.sell,
+      stop: plan.stop,
+      rr: plan.rr,
+      score: plan.score,
+      trend: a.indicators?.trend,
+      rsi: a.indicators?.rsi,
+      volX: a.indicators?.volumeRatio,
+      fundamentals: a.fundamentals || undefined,
+    };
+  });
+}
+
+function bindPicksToScreen(picks, screen, planKey) {
+  const byCode = new Map(
+    (screen || []).map((a) => [String(a.ticker || "").replace(/\.CA$/i, "").toUpperCase(), a])
+  );
+  const out = [];
+  const seen = new Set();
+  for (const pick of picks || []) {
+    const code = String(pick.ticker || "")
+      .replace(/\.CA$/i, "")
+      .toUpperCase();
+    if (!code || seen.has(code)) continue;
+    const row = byCode.get(code);
+    if (!row) continue;
+    seen.add(code);
+    const plan = row[planKey] || {};
+    out.push(
+      pickFromAnalysis(row, {
+        action: "buy",
+        confidence: plan.score || pick.confidence,
+        entry: plan.buy,
+        stopLoss: plan.stop,
+        target1: plan.sell,
+        reason: pick.reason || (plan.reasons || []).join(" · "),
+      })
+    );
+  }
+  return out;
+}
+
 function mentionTickers(question, analyses) {
   const upper = String(question || "").toUpperCase();
   return analyses.filter((a) => {
@@ -785,6 +914,7 @@ function detectIntent(question) {
 
   if (/rsi|أقل من 30|اقل من 30|ارتداد/.test(q + ar)) return { type: "rsi", limit: 10 };
   if (/macd/.test(q)) return { type: "macd", limit: 10 };
+  if (/أسبوع|اسبوع|week|weekly/.test(q + ar)) return { type: "week", limit: 8 };
   if (/مضارب|جلسة|scalp|day.?trade|سكلب/.test(q + ar)) return { type: "scalp", limit: 8 };
   if (/مقاوم|breakout|كسر/.test(q + ar)) return { type: "breakout", limit: 10 };
   if (/تجميع|accumulation|تجمع/.test(ar + q)) return { type: "accumulation", limit: 10 };
@@ -802,6 +932,8 @@ function detectIntent(question) {
 function pickFromAnalysis(a, { action, confidence, entry, stopLoss, target1, target2, reason } = {}) {
   return normalizePick({
     ticker: a.ticker,
+    nameAr: a.nameAr,
+    nameEn: a.nameEn,
     action:
       action ||
       (a.score >= 60 ? "buy" : a.score <= 35 ? "sell" : "hold"),
@@ -871,12 +1003,15 @@ function localAnswerFromScan(question, lang, analyses, screens) {
       breakout: lang === "en" ? "Resistance breaks with high volume" : "كسر مقاومة مع حجم مرتفع",
       accumulation: lang === "en" ? "Exiting accumulation" : "خروج من مرحلة التجميع",
       scalp: lang === "en" ? "Same-session scalp candidates" : "أسهم مضاربة لنفس الجلسة",
+      week: lang === "en" ? "Weekly swing candidates" : "ترشيحات أسبوعية",
       weak: lang === "en" ? "Weakest multi-factor scores now" : "أضعف التقييمات متعدد العوامل دلوقتي",
     };
+    const planOf = (a) => (intent.type === "week" ? a.week : intent.type === "scalp" ? a.scalp : null);
     const list = items
       .map((a, i) => {
-        if (intent.type === "scalp") {
-          return `${i + 1}) ${a.ticker.replace(/\.CA$/i, "")} — اشتري ${a.scalp?.buy} · ابيع ${a.scalp?.sell} · وقف ${a.scalp?.stop} (${a.scalp?.score || a.score}/100)`;
+        const plan = planOf(a);
+        if (plan) {
+          return `${i + 1}) ${a.ticker.replace(/\.CA$/i, "")} — اشتري ${plan.buy} · ابيع ${plan.sell} · وقف ${plan.stop} (${plan.score || a.score}/100)`;
         }
         return `${i + 1}) ${a.ticker.replace(/\.CA$/i, "")} — ${a.score}/100 — دخول ${a.trade.entry} · وقف ${a.trade.stopLoss} · هدف1 ${a.trade.target1}`;
       })
@@ -889,27 +1024,26 @@ function localAnswerFromScan(question, lang, analyses, screens) {
         : `${titles[intent.type] || titles.top}:\n${list}`;
     return {
       answer,
-      picks: items.map((a) =>
-        pickFromAnalysis(a, {
+      picks: items.map((a) => {
+        const plan = planOf(a);
+        return pickFromAnalysis(a, {
           action:
             intent.type === "weak"
               ? a.score <= 35
                 ? "sell"
                 : "hold"
-              : intent.type === "scalp" || a.score >= 60
+              : plan || a.score >= 60
                 ? "buy"
                 : a.score <= 35
                   ? "sell"
                   : "hold",
-          confidence: intent.type === "scalp" ? a.scalp?.score || a.score : a.score,
-          entry: intent.type === "scalp" ? a.scalp?.buy : a.trade.entry,
-          stopLoss: intent.type === "scalp" ? a.scalp?.stop : a.trade.stopLoss,
-          target1: intent.type === "scalp" ? a.scalp?.sell : a.trade.target1,
-          reason:
-            (intent.type === "scalp" ? a.scalp?.reasons : a.reasons)?.join(" · ") ||
-            a.reasons.join(" · "),
-        })
-      ),
+          confidence: plan?.score || a.score,
+          entry: plan?.buy ?? a.trade.entry,
+          stopLoss: plan?.stop ?? a.trade.stopLoss,
+          target1: plan?.sell ?? a.trade.target1,
+          reason: (plan?.reasons || a.reasons).join(" · "),
+        });
+      }),
     };
   }
 
@@ -941,6 +1075,7 @@ async function answerLocalQuestion(question, lang) {
     breakout: scanAnalyses(analyses, "breakout", 10),
     accumulation: scanAnalyses(analyses, "accumulation", 10),
     scalp: scanAnalyses(analyses, "scalp", 8),
+    week: scanAnalyses(analyses, "week", 8),
   };
   const fundMap = await loadFundamentalsMap();
   const local = localAnswerFromScan(question, lang, analyses, screens);
@@ -958,6 +1093,7 @@ async function answerLocalQuestion(question, lang) {
       breakout: screens.breakout.length,
       accumulation: screens.accumulation.length,
       scalp: screens.scalp.length,
+      week: screens.week.length,
     },
     source: "scanner",
   };
@@ -975,6 +1111,7 @@ async function answerQuestion(question, lang, ai = {}) {
     breakout: scanAnalyses(analyses, "breakout", 10),
     accumulation: scanAnalyses(analyses, "accumulation", 10),
     scalp: scanAnalyses(analyses, "scalp", 8),
+    week: scanAnalyses(analyses, "week", 8),
   };
 
   // Is a usable AI provider configured (user key via headers, or server .env)?
@@ -1004,13 +1141,19 @@ async function answerQuestion(question, lang, ai = {}) {
         breakout: screens.breakout.length,
         accumulation: screens.accumulation.length,
         scalp: screens.scalp.length,
+      week: screens.week.length,
       },
       source: "scanner",
     };
   }
 
   const mentioned = mentionTickers(question, analyses);
-  const universe = attachFundamentals(compactForAi(analyses, 25), fundMap);
+  const intent = detectIntent(question);
+  const planKey = intent?.type === "week" ? "week" : intent?.type === "scalp" ? "scalp" : null;
+  const screenRows = planKey ? attachFundamentals(screens[planKey], fundMap) : [];
+  const universe = planKey
+    ? compactScreenForAi(screenRows, planKey)
+    : attachFundamentals(compactForAi(analyses, 25), fundMap);
   const focus =
     mentioned.length > 0
       ? attachFundamentals(
@@ -1018,6 +1161,10 @@ async function answerQuestion(question, lang, ai = {}) {
           fundMap
         )
       : [];
+
+  const lockRule = planKey
+    ? `LOCKED SCREEN: You MUST pick ONLY from Snapshot tickers. Copy buy/sell/stop EXACTLY from Snapshot (do not invent prices). You may reorder or drop names, never add new tickers.`
+    : `picks max 8, from data only. Lower confidence when considerations.conflict, thin liquidity, or weak fundamentals.`;
 
   const prompt = `You are an EGX multi-factor assistant. Do NOT modify files.
 Answers and picks must be LOGICAL and combine technicals WITH company fundamentals.
@@ -1034,23 +1181,29 @@ USE these real numbers in your reasoning and cite them:
 - Favor higher market-cap (more liquid) names when signals are otherwise similar.
 Only say a metric is "غير متاح"/"n/a" if it is missing from that item's fundamentals.
 
+${lockRule}
+
 Question: ${question}
 
-Screen counts: top=${screens.top.length}, rsi<30=${screens.rsi.length}, macdBuy=${screens.macd.length}, breakout=${screens.breakout.length}, exitAccum=${screens.accumulation.length}, scalp=${screens.scalp.length}
+Screen counts: top=${screens.top.length}, rsi<30=${screens.rsi.length}, macdBuy=${screens.macd.length}, breakout=${screens.breakout.length}, exitAccum=${screens.accumulation.length}, scalp=${screens.scalp.length}, week=${screens.week.length}
 Top tickers: ${screens.top.slice(0, 8).map((a) => a.ticker.replace(/\.CA$/i, "") + ":" + a.score).join(", ")}
 Focus: ${JSON.stringify(focus)}
 Snapshot: ${JSON.stringify(universe)}
 
 Return ONLY JSON:
 {"answer":"...","picks":[{"ticker":"COMI","action":"buy|sell|hold","confidence":85,"entry":0,"stopLoss":0,"target1":0,"target2":0,"reason":"...tech + fundamentals (cite P/E, EPS) + sector...","signals":["trend_up","high_volume"]}],"disclaimer":"..."}
-picks max 8, from data only. Lower confidence when considerations.conflict, thin liquidity, or weak fundamentals.`;
+${lockRule}`;
 
   try {
     const text = await runAgent(prompt, ai);
     const parsed = extractJson(text);
-    const picks = Array.isArray(parsed?.picks)
+    let picks = Array.isArray(parsed?.picks)
       ? parsed.picks.map((p) => normalizePick(p)).filter(Boolean).slice(0, 10)
       : [];
+    if (planKey) {
+      picks = bindPicksToScreen(picks, screenRows, planKey);
+      if (!picks.length) picks = local?.picks || [];
+    }
 
     if (parsed?.answer || picks.length) {
       return {
@@ -1068,6 +1221,7 @@ picks max 8, from data only. Lower confidence when considerations.conflict, thin
           breakout: screens.breakout.length,
           accumulation: screens.accumulation.length,
           scalp: screens.scalp.length,
+      week: screens.week.length,
         },
         source: "agent",
       };
@@ -1091,6 +1245,7 @@ picks max 8, from data only. Lower confidence when considerations.conflict, thin
         breakout: screens.breakout.length,
         accumulation: screens.accumulation.length,
         scalp: screens.scalp.length,
+      week: screens.week.length,
       },
       source: "scanner-fallback",
     };
@@ -1134,6 +1289,7 @@ picks max 8, from data only. Lower confidence when considerations.conflict, thin
       breakout: screens.breakout.length,
       accumulation: screens.accumulation.length,
       scalp: screens.scalp.length,
+      week: screens.week.length,
     },
     source: "scanner-fallback",
   };
@@ -1148,15 +1304,44 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (req.method === "GET" && url.pathname === "/api/health") {
+      const meta = await readLatestMeta();
+      const scrape = marketStatus();
       return sendJson(res, 200, {
         ok: true,
+        marketReady: meta.exists && meta.count > 0,
+        market: {
+          exists: meta.exists,
+          quotes: meta.count,
+          scrapedAt: meta.scrapedAt,
+          stale: meta.stale,
+          scraping: scrape.scraping,
+          lastError: scrape.lastError,
+        },
         hasKey: Boolean(process.env.CURSOR_API_KEY?.trim()),
         providers: {
           cursor: { serverKey: Boolean(process.env.CURSOR_API_KEY?.trim()) },
           openai: { serverKey: Boolean(process.env.OPENAI_API_KEY?.trim()) },
         },
         defaultProvider: normalizeProvider(),
+        fundsPhoto: true,
       });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/refresh") {
+      const secret = process.env.REFRESH_SECRET?.trim();
+      if (secret) {
+        const provided =
+          req.headers["x-refresh-secret"] || url.searchParams.get("secret") || "";
+        if (provided !== secret) {
+          return sendJson(res, 401, { error: "Unauthorized" });
+        }
+      }
+      const scrape = marketStatus();
+      if (scrape.scraping) {
+        return sendJson(res, 202, { ok: true, scraping: true, message: "Scrape already running" });
+      }
+      startScrape("api-refresh").catch(() => {});
+      return sendJson(res, 202, { ok: true, scraping: true, message: "Scrape started" });
     }
 
     if (req.method === "GET" && url.pathname === "/api/analyze") {
@@ -1190,15 +1375,36 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, { ...data, cached: false });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/depth") {
+      const ticker = normalizeTicker(url.searchParams.get("ticker"));
+      if (!ticker) return sendJson(res, 400, { error: "ticker is required" });
+      const market = await loadMarket();
+      const quote = findQuote(market.results, ticker);
+      if (!quote) return sendJson(res, 404, { error: `Stock not found: ${ticker}` });
+      const levels = Number(url.searchParams.get("levels") || 10);
+      const depth = buildPriceDepth(quote, { levels });
+      return sendJson(res, 200, {
+        ticker: quote.ticker,
+        nameAr: quote.nameAr,
+        nameEn: quote.nameEn,
+        scrapedAt: market.scrapedAt,
+        range: market.range,
+        ...depth,
+      });
+    }
+
     if (req.method === "GET" && url.pathname === "/api/scan") {
-      const type = url.searchParams.get("type") || "top";
+      const rawType = url.searchParams.get("type") || "top";
+      const type = SCAN_TYPES.includes(rawType) ? rawType : "top";
       const limit = Number(url.searchParams.get("limit") || 10);
       const market = await loadMarket();
       const analyses = analyzeUniverse(market.results);
       const fundMap = await loadFundamentalsMap();
-      const items = attachFundamentals(scanAnalyses(analyses, type, limit), fundMap);
+      let items = attachFundamentals(scanAnalyses(analyses, type, limit), fundMap);
+      if (type === "scalp") items = items.filter((i) => i.scalp?.eligible);
+      if (type === "week") items = items.filter((i) => i.week?.eligible);
       return sendJson(res, 200, {
-        type: ["top", "rsi", "macd", "breakout", "accumulation", "scalp"].includes(type) ? type : "top",
+        type,
         scrapedAt: market.scrapedAt,
         range: market.range,
         count: items.length,
@@ -1206,11 +1412,47 @@ const server = http.createServer(async (req, res) => {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/api/funds") {
+      const market = await loadMarket();
+      const analyses = analyzeUniverse(market.results);
+      const items = scoreThndrFunds(analyses);
+      return sendJson(res, 200, {
+        scrapedAt: market.scrapedAt,
+        range: market.range,
+        source: "thndr-public-catalog",
+        note: "Stances use EGX tape, not live fund NAVs from Thndr.",
+        count: items.length,
+        items,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/funds-photo") {
+      const body = await readBody(req);
+      const image = String(body.image || "");
+      const ai = aiConfigFromReq(req, body);
+      const holdings = await runFundsPhotoExtract(image, ai);
+      return sendJson(res, 200, { holdings, count: holdings.length });
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/funds-advice") {
+      const body = await readBody(req);
+      const ai = aiConfigFromReq(req, body);
+      const advice = await runFundsAdvice(body, ai);
+      return sendJson(res, 200, advice);
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/ai-ping") {
+      const body = await readBody(req, { maxBytes: 8_000 });
+      const ai = aiConfigFromReq(req, body);
+      const result = await runAiPing(ai);
+      return sendJson(res, 200, result);
+    }
+
     if (req.method === "POST" && url.pathname === "/api/ask") {
       const body = await readBody(req);
       const question = String(body.question || body.q || "").trim();
       if (!question) return sendJson(res, 400, { error: "question is required" });
-      if (question.length > 800) return sendJson(res, 400, { error: "question too long" });
+      if (question.length > 2000) return sendJson(res, 400, { error: "question too long" });
       const lang = body.lang === "en" ? "en" : "ar";
       const mode = String(body.mode || "").toLowerCase() === "local" ? "local" : "ai";
       if (mode === "local") {
@@ -1254,7 +1496,12 @@ const server = http.createServer(async (req, res) => {
     console.error("[api]", err);
     return sendJson(res, status, {
       error: err.message || String(err),
-      retryable: err instanceof CursorAgentError ? Boolean(err.isRetryable) : false,
+      retryable:
+        typeof err.retryable === "boolean"
+          ? err.retryable
+          : err instanceof CursorAgentError
+            ? Boolean(err.isRetryable)
+            : false,
     });
   }
 });
@@ -1262,6 +1509,17 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, "0.0.0.0", () => {
   console.log(`EGX API listening on http://0.0.0.0:${PORT}`);
   console.log(`CURSOR_API_KEY ${process.env.CURSOR_API_KEY?.trim() ? "loaded" : "MISSING"}`);
+  ensureMarketData()
+    .then(({ ready, meta, scraping }) => {
+      if (ready) {
+        console.log(`[market] ready — ${meta.count} quotes · scrapedAt ${meta.scrapedAt}`);
+      } else if (scraping) {
+        console.log("[market] latest.json missing/empty — scrape started in background");
+      } else {
+        console.warn("[market] not ready and scrape not started");
+      }
+    })
+    .catch((err) => console.error("[market] ensure failed:", err?.message || err));
 });
 
 server.on("error", (err) => {

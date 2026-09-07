@@ -6,7 +6,7 @@ import { useI18n } from "../composables/useI18n.js";
 const props = defineProps({
   quote: { type: Object, required: true },
   lang: { type: String, default: "ar" },
-  locale: { type: String, default: "ar-EG" },
+  locale: { type: String, default: "ar-EG-u-nu-latn" },
   fundamentals: { type: Object, default: null },
 });
 
@@ -14,11 +14,14 @@ const { t } = useI18n();
 
 const router = useRouter();
 
-const name = computed(() =>
-  props.lang === "ar"
-    ? props.quote.nameAr || props.quote.name || props.quote.nameEn || ""
-    : props.quote.nameEn || props.quote.name || props.quote.nameAr || ""
-);
+const name = computed(() => {
+  const q = props.quote || {};
+  const ar = String(props.lang || "ar").startsWith("ar");
+  const label = ar
+    ? q.nameAr || q.name || q.nameEn
+    : q.nameEn || q.name || q.nameAr;
+  return String(label || "").trim() || shortTicker.value;
+});
 
 const up = computed(() => (props.quote.changePercent ?? 0) >= 0);
 
@@ -66,6 +69,7 @@ function openDetails() {
         {{ quote.changePercent >= 0 ? "+" : "" }}{{ fmt(quote.changePercent) }}%
       </template>
     </div>
+    <!--
     <div v-if="hasFundamentals" class="fund">
       <span class="fund-item">
         <span class="fund-k">{{ t.fPe }}</span>
@@ -80,5 +84,6 @@ function openDetails() {
         <span class="fund-v">{{ fmtBig(f.marketCap) }}</span>
       </span>
     </div>
+    -->
   </button>
 </template>

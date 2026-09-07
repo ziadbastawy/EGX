@@ -1,12 +1,16 @@
 <script setup>
-import { onMounted, reactive, ref } from "vue";
+import { computed, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "../composables/useI18n.js";
 import { useAiSettings } from "../composables/useAiSettings.js";
 import { apiUrl } from "../lib/api.js";
+import { formatSessionDay, getNextEgxSessionDate } from "../lib/sessionDate.js";
 
 const props = defineProps({
-  locale: { type: String, default: "ar-EG" },
+  locale: { type: String, default: "ar-EG-u-nu-latn" },
+  mode: { type: String, default: "local" },
+  horizon: { type: String, default: "session" },
+  limit: { type: Number, default: 8 },
 });
 
 const { lang, t } = useI18n();
@@ -17,28 +21,92 @@ const items = ref([]);
 const loading = ref(false);
 const error = ref(null);
 const loadedOnce = ref(false);
-const aiByTicker = reactive({});
-const aiLoading = reactive({});
-const aiError = reactive({});
 
-function fmt(n, d = 2) {
+const isLocal = computed(() => props.mode === "local");
+const isWeek = computed(() => props.horizon === "week");
+const scanType = computed(() => (isWeek.value ? "week" : "scalp"));
+const sessionDay = computed(() => formatSessionDay(getNextEgxSessionDate(), props.locale));
+
+const title = computed(() => {
+  if (isWeek.value) return isLocal.value ? t.value.weekLocalTitle : t.value.weekAiTitle;
+  return isLocal.value ? t.value.scalpLocalTitle : t.value.scalpAiTitle;
+});
+
+function planOf(item) {
+  return isWeek.value ? item?.week : item?.scalp;
+}
+
+function fmt(n) {
   if (n == null || Number.isNaN(Number(n))) return "—";
-  return Number(n).toLocaleString(props.locale, {
+  const v = Number(n);
+  const d = v >= 10 ? 2 : v >= 1 ? 3 : 4;
+  return v.toLocaleString(props.locale, {
     minimumFractionDigits: d,
     maximumFractionDigits: d,
   });
+}
+
+function tickerCode(raw) {
+  return String(raw || "")
+    .toUpperCase()
+    .replace(/\.CA$/i, "");
+}
+
+async function fetchScan() {
+  const res = await fetch(apiUrl(`/api/scan?type=${scanType.value}&limit=${props.limit}`));
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return (data.items || []).filter((row) => planOf(row)?.eligible);
+}
+
+async function loadLocal() {
+  items.value = await fetchScan();
+}
+
+async function loadAi() {
+  const localItems = await fetchScan();
+  const byCode = new Map(localItems.map((row) => [tickerCode(row.ticker), row]));
+  const listed = localItems
+    .map((row) => {
+      const p = planOf(row);
+      return `${tickerCode(row.ticker)} buy=${p?.buy} sell=${p?.sell}`;
+    })
+    .join(", ");
+
+  const question = isWeek.value
+    ? t.value.weekAiQuestion(props.limit, listed)
+    : t.value.scalpAiQuestion(sessionDay.value, props.limit, listed);
+
+  try {
+    const res = await fetch(apiUrl("/api/ask"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...aiHeaders() },
+      body: JSON.stringify({ question, lang: lang.value, mode: "ai" }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+
+    const ranked = [];
+    const seen = new Set();
+    for (const pick of data.picks || []) {
+      const code = tickerCode(pick.ticker);
+      const row = byCode.get(code);
+      if (!row || seen.has(code)) continue;
+      seen.add(code);
+      ranked.push(row);
+    }
+    items.value = ranked.length ? ranked : localItems;
+  } catch {
+    items.value = localItems;
+  }
 }
 
 async function load() {
   loading.value = true;
   error.value = null;
   try {
-    const res = await fetch(apiUrl("/api/scan?type=scalp&limit=8"));
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    items.value = data.items || [];
-    for (const key of Object.keys(aiByTicker)) delete aiByTicker[key];
-    for (const key of Object.keys(aiError)) delete aiError[key];
+    if (isLocal.value) await loadLocal();
+    else await loadAi();
   } catch (err) {
     error.value = err.message;
     items.value = [];
@@ -49,43 +117,28 @@ async function load() {
 }
 
 function openStock(ticker) {
-  const code = String(ticker || "").replace(/\.CA$/i, "");
-  if (!code) return;
-  router.push({ name: "stock", params: { ticker: code } });
-}
-
-async function askScalpAi(item, e) {
-  e?.stopPropagation?.();
-  const ticker = item?.ticker;
-  if (!ticker || aiLoading[ticker]) return;
-  aiLoading[ticker] = true;
-  aiError[ticker] = null;
-  try {
-    const res = await fetch(apiUrl("/api/suggest-scalp"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...aiHeaders() },
-      body: JSON.stringify({ ticker, lang: lang.value }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-    aiByTicker[ticker] = data.suggestion;
-  } catch (err) {
-    aiError[ticker] = err.message;
-    delete aiByTicker[ticker];
-  } finally {
-    aiLoading[ticker] = false;
-  }
+  const code = tickerCode(ticker);
+  if (code) router.push({ name: "stock", params: { ticker: code } });
 }
 
 onMounted(load);
+watch(() => [props.limit, props.mode, props.horizon], load);
 </script>
 
 <template>
-  <section class="scalp-section">
+  <section
+    class="scalp-section"
+    :class="{
+      'scalp-section--local': isLocal,
+      'scalp-section--ai': !isLocal,
+    }"
+  >
     <div class="scalp-head">
       <div>
-        <h2>{{ t.scalpTitle }}</h2>
-        <p>{{ t.scalpLede }}</p>
+        <span class="scalp-mode-badge" :class="isLocal ? 'local' : 'ai'">
+          {{ isLocal ? t.scalpLocalBadge : t.scalpAiBadge }}
+        </span>
+        <h2>{{ title }}</h2>
       </div>
       <button type="button" class="chip" :disabled="loading" @click="load">
         {{ loading ? t.loading : t.scalpRefresh }}
@@ -102,112 +155,24 @@ onMounted(load);
       <article
         v-for="item in items"
         :key="item.ticker"
-        class="pick-card scalp-card"
+        class="pick-card scalp-card scalp-card--simple"
         @click="openStock(item.ticker)"
       >
         <div class="pick-top">
-          <strong>{{ item.ticker.replace(".CA", "") }}</strong>
-          <span class="badge">{{ t.scalpBadge }}</span>
-          <span class="conf">{{ item.scalp?.score ?? item.score }}/100</span>
+          <strong>{{ tickerCode(item.ticker) }}</strong>
         </div>
         <p class="pick-name">{{ lang === "ar" ? item.nameAr : item.nameEn }}</p>
-        <p class="pick-reason">
-          {{ (item.scalp?.reasons || item.reasons || []).slice(0, 2).join(" · ") }}
-        </p>
-
         <div class="scalp-prices">
           <div class="scalp-buy">
             <span>{{ t.scalpBuy }}</span>
-            <strong>{{ fmt(item.scalp?.buy) }}</strong>
+            <strong>{{ fmt(planOf(item)?.buy) }}</strong>
           </div>
           <div class="scalp-sell">
             <span>{{ t.scalpSell }}</span>
-            <strong>{{ fmt(item.scalp?.sell) }}</strong>
-          </div>
-        </div>
-
-        <dl class="pick-levels">
-          <div>
-            <dt>{{ t.aiStop }}</dt>
-            <dd>{{ fmt(item.scalp?.stop) }}</dd>
-          </div>
-          <div>
-            <dt>{{ t.nowPrice }}</dt>
-            <dd>{{ fmt(item.price) }}</dd>
-          </div>
-          <div>
-            <dt>Vol</dt>
-            <dd>{{ fmt(item.indicators?.volumeRatio, 1) }}×</dd>
-          </div>
-          <div>
-            <dt>RSI</dt>
-            <dd>{{ fmt(item.indicators?.rsi, 1) }}</dd>
-          </div>
-        </dl>
-
-        <div class="scalp-ai" @click.stop>
-          <button
-            type="button"
-            class="ai-btn scalp-ai-btn"
-            :disabled="aiLoading[item.ticker]"
-            @click="askScalpAi(item, $event)"
-          >
-            {{ aiLoading[item.ticker] ? t.aiLoading : t.scalpAiCta }}
-          </button>
-
-          <p v-if="aiError[item.ticker]" class="ai-error">
-            {{ t.aiError }}: {{ aiError[item.ticker] }}
-          </p>
-
-          <div v-if="aiByTicker[item.ticker]" class="scalp-ai-result" :class="aiByTicker[item.ticker].action">
-            <div class="ai-action">
-              <span class="badge">{{ t.aiAction[aiByTicker[item.ticker].action] || aiByTicker[item.ticker].action }}</span>
-              <span class="confidence">
-                {{ t.aiConfidence }}: {{ aiByTicker[item.ticker].confidence }}/100
-              </span>
-            </div>
-            <p class="ai-summary">{{ aiByTicker[item.ticker].summary }}</p>
-            <div class="scalp-prices ai-prices">
-              <div class="scalp-buy">
-                <span>{{ t.scalpBuy }}</span>
-                <strong>{{ fmt(aiByTicker[item.ticker].buy) }}</strong>
-              </div>
-              <div class="scalp-sell">
-                <span>{{ t.scalpSell }}</span>
-                <strong>{{ fmt(aiByTicker[item.ticker].sell) }}</strong>
-              </div>
-            </div>
-            <dl class="pick-levels">
-              <div>
-                <dt>{{ t.aiStop }}</dt>
-                <dd>{{ fmt(aiByTicker[item.ticker].stop) }}</dd>
-              </div>
-              <div>
-                <dt>{{ t.nowPrice }}</dt>
-                <dd>{{ fmt(item.price) }}</dd>
-              </div>
-            </dl>
-            <ul v-if="aiByTicker[item.ticker].reasons?.length" class="scalp-ai-reasons">
-              <li v-for="(reason, i) in aiByTicker[item.ticker].reasons" :key="i">{{ reason }}</li>
-            </ul>
-            <dl
-              v-if="aiByTicker[item.ticker].considerations"
-              class="considerations-grid scalp-considerations"
-            >
-              <div
-                v-for="(text, key) in aiByTicker[item.ticker].considerations"
-                :key="key"
-                :class="{ priority: ['valuation', 'earningsQuality', 'capitalAllocation'].includes(key) }"
-              >
-                <dt>{{ t.aiConsideration[key] || key }}</dt>
-                <dd>{{ text }}</dd>
-              </div>
-            </dl>
+            <strong>{{ fmt(planOf(item)?.sell) }}</strong>
           </div>
         </div>
       </article>
     </div>
-
-    <p class="ai-disclaimer">{{ t.scalpDisclaimer }}</p>
   </section>
 </template>

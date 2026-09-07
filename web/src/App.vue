@@ -1,5 +1,5 @@
 <script setup>
-import { computed, watch } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch } from "vue";
 import { useRoute, useRouter, RouterLink, RouterView } from "vue-router";
 import { useI18n } from "./composables/useI18n.js";
 import { useAuth } from "./composables/useAuth.js";
@@ -23,6 +23,21 @@ watch(
 );
 
 const brandTo = computed(() => ({ name: "home" }));
+const fundsOpen = ref(false);
+const fundsActive = computed(() => route.name === "funds" || route.name === "my-funds");
+
+function closeFunds() {
+  fundsOpen.value = false;
+}
+function toggleFunds() {
+  fundsOpen.value = !fundsOpen.value;
+}
+function onDocClick(e) {
+  if (!e.target.closest?.(".nav-drop")) closeFunds();
+}
+watch(() => route.fullPath, closeFunds);
+onMounted(() => document.addEventListener("click", onDocClick));
+onUnmounted(() => document.removeEventListener("click", onDocClick));
 
 function onLogout() {
   logout();
@@ -78,6 +93,26 @@ function onLogout() {
       >
         {{ t.navScalp }}
       </RouterLink>
+      <div class="nav-drop" :class="{ open: fundsOpen }">
+        <button
+          type="button"
+          class="nav-link nav-drop-btn"
+          :class="{ active: fundsActive }"
+          :aria-expanded="fundsOpen"
+          aria-haspopup="true"
+          @click.stop="toggleFunds"
+        >
+          {{ t.navFunds }}
+        </button>
+        <div v-show="fundsOpen" class="nav-drop-menu" role="menu">
+          <RouterLink class="nav-drop-item" :class="{ active: route.name === 'funds' }" :to="{ name: 'funds' }">
+            {{ t.navFundsAll }}
+          </RouterLink>
+          <RouterLink class="nav-drop-item" :class="{ active: route.name === 'my-funds' }" :to="{ name: 'my-funds' }">
+            {{ t.navMyFunds }}
+          </RouterLink>
+        </div>
+      </div>
     </nav>
 
     <RouterView />

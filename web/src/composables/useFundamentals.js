@@ -1,4 +1,5 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
+import { publicUrl } from "../lib/api.js";
 
 /**
  * Loads /fundamentals.json (produced by `npm run scrape:fundamentals`) and
@@ -30,7 +31,7 @@ export function useFundamentals({ poll = true, pollMs = 30_000 } = {}) {
 
   async function load() {
     try {
-      const res = await fetch(`/fundamentals.json?t=${Date.now()}`);
+      const res = await fetch(`${publicUrl("fundamentals.json")}?t=${Date.now()}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       payload.value = await res.json();
       error.value = null;

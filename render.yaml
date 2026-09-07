@@ -10,12 +10,18 @@ services:
     runtime: node
     plan: free
     region: frankfurt
-    buildCommand: npm install
+    # Scrape during build so latest.json ships with the deploy slug.
+    # Boot-time ensureMarketData() retries if the file is still missing.
+    buildCommand: npm install && PRICE_SOURCE=yahoo BATCH_SIZE=16 npm run scrape
     startCommand: node src/server.js
     healthCheckPath: /api/health
     envVars:
       - key: NODE_VERSION
         value: "22"
+      - key: PRICE_SOURCE
+        value: yahoo
+      - key: BATCH_SIZE
+        value: "16"
       - key: AI_PROVIDER
         value: openai
       - key: OPENAI_API_KEY
@@ -23,4 +29,6 @@ services:
       - key: OPENAI_MODEL
         value: gpt-4o-mini
       - key: CURSOR_API_KEY
+        sync: false
+      - key: REFRESH_SECRET
         sync: false

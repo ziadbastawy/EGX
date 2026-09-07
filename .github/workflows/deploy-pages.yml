@@ -30,14 +30,30 @@ jobs:
       - name: Install
         run: npm ci
 
+      # latest.json is gitignored (local watch rewrites it). Pages must build
+      # it here or copy the committed snapshot so /EGX/latest.json exists.
+      - name: Prepare latest.json
+        run: |
+          npm run scrape || echo "scrape failed — using committed snapshot"
+          if [ ! -s web/public/latest.json ]; then
+            cp web/public/market-snapshot.json web/public/latest.json
+          fi
+          ls -lh web/public/latest.json
+
       - name: Build
         env:
           # Project Pages URL is https://<user>.github.io/<repo>/
           VITE_BASE: /${{ github.event.repository.name }}/
-          # Set in GitHub → Settings → Secrets and variables → Actions → Variables
-          # Example: https://egx-api.onrender.com
-          VITE_API_BASE: ${{ vars.VITE_API_BASE }}
-        run: npm run build
+          # Set either as an Actions Variable or Secret named VITE_API_BASE
+          # Example: https://your-service.onrender.com  (no trailing slash)
+          VITE_API_BASE: ${{ vars.VITE_API_BASE || secrets.VITE_API_BASE }}
+        run: |
+          if [ -z "$VITE_API_BASE" ]; then
+            echo "::warning::VITE_API_BASE is empty — /api calls will hit github.io (404/405). Set Settings → Secrets and variables → Actions → VITE_API_BASE to your Render URL."
+          else
+            echo "VITE_API_BASE is set (length ${#VITE_API_BASE})"
+          fi
+          npm run build
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3

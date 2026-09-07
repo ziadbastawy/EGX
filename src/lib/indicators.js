@@ -1,6 +1,7 @@
 /** Technical indicators + multi-factor EGX stock analysis (educational use only). */
 
 import { buildCompanyProfile } from "./companyContext.js";
+import { buildPriceDepth, summarizeDepth } from "./priceDepth.js";
 
 function last(arr) {
   return arr.length ? arr[arr.length - 1] : null;
@@ -115,6 +116,293 @@ function swingLevels(candles, lookback = 40) {
     sortedHighs.slice(-Math.max(3, Math.floor(sortedHighs.length * 0.2)))
   );
   return { support: round(support), resistance: round(resistance) };
+}
+
+function hasSignal(a, name) {
+  return Array.isArray(a.signals) && a.signals.includes(name);
+}
+
+function uniqueReasons(list, max = 8) {
+  const out = [];
+  for (const r of list || []) {
+    if (!r || out.includes(r)) continue;
+    out.push(r);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+/** Stop must sit below price; target above price; entry between stop and target. */
+function validLongLevels(price, buy, sell, stop) {
+  if ([price, buy, sell, stop].some((n) => n == null || !Number.isFinite(n))) return false;
+  return stop < price && price < sell && stop < buy && buy < sell;
+}
+
+function rewardRisk(price, sell, stop) {
+  const risk = price - stop;
+  const reward = sell - price;
+  if (risk <= 0 || reward <= 0) return null;
+  return round(Math.min(reward / risk, 4), 2);
+}
+
+function priceDecimals(price) {
+  if (price == null) return 2;
+  if (price >= 10) return 2;
+  if (price >= 1) return 3;
+  return 4;
+}
+
+function px(n, price) {
+  return round(n, priceDecimals(price));
+}
+
+function sessionLevels(price, atr, support, resistance, isBreakout) {
+  const band = atr && atr > 0 ? atr : price * 0.02;
+  const stopDist = Math.max(band * 0.5, price * 0.01);
+  let stop = price - stopDist;
+  if (support != null && support < price && price - support <= stopDist * 1.2) {
+    stop = Math.min(stop, support * 0.997);
+  }
+  stop = px(stop, price);
+
+  const minSell = price + (price - stop) * 1.35;
+  let sell;
+  if (isBreakout) {
+    sell = Math.max(minSell, price + band * 0.65);
+  } else if (resistance != null && resistance > price) {
+    sell = Math.min(resistance * 0.995, price + band * 0.8);
+  } else {
+    sell = price + band * 0.7;
+  }
+  sell = px(sell, price);
+  const buy = px(price, price);
+  return { buy, sell, stop };
+}
+
+function confluenceCount(a) {
+  return [
+    a.considerations?.trend === "up",
+    a.considerations?.emaStackBull,
+    hasSignal(a, "macd_buy"),
+    hasSignal(a, "breakout_volume"),
+    hasSignal(a, "exit_accumulation"),
+    hasSignal(a, "bounce_setup"),
+    hasSignal(a, "high_volume"),
+    (a.market?.rsVsMarket ?? 0) >= 1,
+    a.depth?.bidCushion,
+  ].filter(Boolean).length;
+}
+
+function setupFromSignals(a) {
+  if (hasSignal(a, "breakout_volume")) return "breakout";
+  if (hasSignal(a, "bounce_setup")) return "bounce";
+  if (hasSignal(a, "exit_accumulation")) return "accumulation_exit";
+  if (hasSignal(a, "macd_buy")) return "macd_cross";
+  return "momentum";
+}
+
+function hardRiskFlags(a) {
+  const flags = [];
+  const rsi = a.indicators?.rsi;
+  if (a.considerations?.conflict) flags.push("إشارات متعارضة");
+  if (hasSignal(a, "false_break_risk")) flags.push("خطر كسر كاذب");
+  if (hasSignal(a, "thin_volume") || a.market?.liquidityTier === "low") flags.push("سيولة ضعيفة");
+  if (a.considerations?.trend === "down" && !hasSignal(a, "breakout_volume")) flags.push("اتجاه هابط");
+  if (rsi != null && rsi > 72 && !hasSignal(a, "breakout_volume")) flags.push("تشبع شرائي");
+  if (a.actionHint === "sell") flags.push("إشارة بيع عامة");
+  return flags;
+}
+
+function refineScalpCandidate(a) {
+  const ind = a.indicators || {};
+  const cons = a.considerations || {};
+  const price = a.price;
+  const volX = ind.volumeRatio || 0;
+  const atrPct = (ind.atrPct || 0) / 100;
+  const isBreakout = hasSignal(a, "breakout_volume");
+  let { buy, sell, stop } = sessionLevels(price, ind.atr, ind.support, ind.resistance, isBreakout);
+  const d = a.depth;
+  if (d?.wallAskPrice != null && d.wallAskPrice > price && !isBreakout) {
+    const capped = px(d.wallAskPrice * 0.995, price);
+    if (capped > price) sell = Math.min(sell, capped);
+  }
+  const rr = rewardRisk(price, sell, stop);
+  const flags = hardRiskFlags(a);
+  const hits = confluenceCount(a);
+
+  let score = 36;
+  if (volX >= 1.4) score += 8;
+  if (volX >= 2) score += 6;
+  if (a.market?.liquidityTier === "high") score += 6;
+  if (atrPct >= 0.015 && atrPct <= 0.045) score += 8;
+  if (atrPct > 0.06) score -= 6;
+  if (cons.trend === "up") score += 10;
+  if (cons.emaStackBull) score += 5;
+  if (isBreakout) score += 10;
+  if (hasSignal(a, "macd_buy")) score += 8;
+  if (hasSignal(a, "exit_accumulation")) score += 7;
+  if (hasSignal(a, "bounce_setup")) score += 6;
+  if (ind.distToResistancePct != null && ind.distToResistancePct >= 3) score += 5;
+  if (ind.distToResistancePct != null && ind.distToResistancePct < 1.2 && !isBreakout) score -= 10;
+  if (rr != null && rr >= 1.5) score += 6;
+  if (rr != null && rr >= 2) score += 4;
+  if (hits >= 3) score += 6;
+  if (a.score >= 65) score += 4;
+  if (d?.bidCushion) score += 8;
+  if (d?.ratio != null && d.ratio >= 1.5) score += 4;
+  if (d?.pocDistPct != null && d.pocDistPct < -0.3) score += 4;
+  if (d?.pocDistPct != null && d.pocDistPct > 1) score -= 5;
+  if (d?.thin) score -= 12;
+  if (d?.askWall && !isBreakout) score -= 10;
+  score -= flags.length * 10;
+  score = Math.max(0, Math.min(92, Math.round(score)));
+
+  const eligible =
+    flags.length === 0 &&
+    hits >= 2 &&
+    volX >= 1.35 &&
+    atrPct >= 0.012 &&
+    validLongLevels(price, buy, sell, stop) &&
+    rr != null &&
+    rr >= 1.3 &&
+    score >= 58 &&
+    !(d?.thin);
+
+  const reasons = [];
+  if (volX >= 1.4) reasons.push(`سيولة ${round(volX, 1)}× متوسط 20 يوم`);
+  if (isBreakout) reasons.push("كسر مقاومة بحجم");
+  if (hasSignal(a, "macd_buy")) reasons.push("تقاطع MACD شراء");
+  if (hasSignal(a, "bounce_setup")) reasons.push("ارتداد قرب الدعم");
+  if (cons.trend === "up") reasons.push("اتجاه صاعد");
+  if (d?.bidCushion) reasons.push(`عمق داعم تحت السعر (طلبات/عروض ${d.ratio}:1)`);
+  if (d?.askWall && !isBreakout) reasons.push("جدار عروض قريب — صعب المضاربة لأعلى");
+  if (d?.pocDistPct != null && d.pocDistPct < -0.3) reasons.push("تركيز الحجم تحت السعر (دعم)");
+  if (d?.thin) reasons.push("عمق ضعيف قرب آخر سعر");
+  if (rr != null) reasons.push(`عائد/مخاطرة ${rr}:1 من السعر الحالي`);
+  if (!eligible) reasons.push(...flags.map((f) => `مستبعد: ${f}`));
+
+  a.scalp = {
+    eligible,
+    score,
+    buy,
+    sell,
+    stop,
+    rr,
+    setup: setupFromSignals(a),
+    reasons: uniqueReasons(reasons),
+  };
+  if (eligible && !hasSignal(a, "scalp_session")) a.signals.push("scalp_session");
+}
+
+function refineWeekCandidate(a) {
+  const cons = a.considerations || {};
+  const price = a.price;
+  const atr = a.indicators?.atr || price * 0.02;
+  const maxStopDist = Math.min(price * 0.07, Math.max(atr * 1.15, price * 0.035));
+  let stop = a.trade?.stopLoss;
+  if (stop == null || price - stop > maxStopDist) stop = px(price - maxStopDist, price);
+  if (stop >= price) stop = px(price - maxStopDist, price);
+
+  const buy = px(a.trade?.entry ?? price, price);
+  let sell = a.trade?.target1;
+  const minSell = price + (price - stop) * 1.5;
+  if (sell == null || sell < minSell) sell = px(minSell, price);
+  else sell = px(sell, price);
+  const sell2 = a.trade?.target2 != null ? px(a.trade.target2, price) : null;
+  const rr = rewardRisk(price, sell, stop);
+  const flags = hardRiskFlags(a);
+  const hits = confluenceCount(a);
+
+  let score = Math.min(70, a.score || 0);
+  if (cons.trend === "up") score += 6;
+  if (cons.aboveEma200) score += 4;
+  if (cons.emaStackBull) score += 4;
+  if (hasSignal(a, "macd_buy")) score += 5;
+  if (hasSignal(a, "exit_accumulation")) score += 5;
+  if (rr != null && rr >= 1.6) score += 6;
+  if (a.market?.rsVsSector != null && a.market.rsVsSector >= 1.5) score += 3;
+  if (a.market?.liquidityTier === "low") score -= 8;
+  if (a.depth?.bidCushion) score += 5;
+  if (a.depth?.thin) score -= 6;
+  if (a.depth?.askWall) score -= 6;
+  if (a.depth?.pocDistPct != null && a.depth.pocDistPct < -0.5) score += 3;
+  score -= flags.length * 8;
+  score = Math.max(0, Math.min(92, Math.round(score)));
+
+  const eligible =
+    flags.length === 0 &&
+    hits >= 2 &&
+    cons.trend !== "down" &&
+    a.actionHint !== "sell" &&
+    validLongLevels(price, buy, sell, stop) &&
+    rr != null &&
+    rr >= 1.5 &&
+    score >= 60;
+
+  const reasons = [];
+  if (cons.trend === "up") reasons.push("اتجاه صاعد يناسب أفق أسبوع");
+  if (cons.aboveEma200) reasons.push("فوق EMA200");
+  if (hasSignal(a, "macd_buy")) reasons.push("MACD يدعم الاستمرار");
+  if (a.depth?.bidCushion) reasons.push(`عمق داعم تحت السعر (${a.depth.ratio}:1)`);
+  if (rr != null) reasons.push(`عائد/مخاطرة ${rr}:1 للهدف الأول`);
+  if (!eligible) reasons.push(...flags.map((f) => `مستبعد: ${f}`));
+
+  a.week = {
+    eligible,
+    score,
+    buy,
+    sell,
+    sell2,
+    stop,
+    rr,
+    setup: setupFromSignals(a),
+    reasons: uniqueReasons(reasons),
+  };
+}
+
+export function applyFundamentalPlanBoost(plan, fundamentals) {
+  if (!plan || !fundamentals) return plan;
+  let score = plan.score;
+  const reasons = [...(plan.reasons || [])];
+  const f = fundamentals;
+
+  if (f.marketCap != null && f.marketCap >= 5e9) {
+    score += 4;
+    reasons.push("قيمة سوقية كبيرة — سيولة أفضل");
+  } else if (f.marketCap != null && f.marketCap < 3e8) {
+    score -= 8;
+    reasons.push("قيمة سوقية صغيرة — مخاطرة سيولة");
+  }
+  if (f.eps != null && f.eps < 0) {
+    score -= 6;
+    reasons.push("EPS سالب");
+  }
+  if (f.pe != null && f.pe < 0) {
+    score -= 5;
+    reasons.push("P/E سالب");
+  }
+  if (f.pe != null && f.pe > 0 && f.pe <= 12 && f.eps != null && f.eps > 0) {
+    score += 3;
+    reasons.push(`P/E ${round(f.pe, 1)} مع أرباح موجبة`);
+  }
+
+  score = Math.max(0, Math.min(92, Math.round(score)));
+  const tinyCap = f.marketCap != null && f.marketCap < 3e8;
+  return {
+    ...plan,
+    score,
+    eligible: Boolean(plan.eligible) && score >= 58 && !tinyCap,
+    reasons: uniqueReasons(reasons),
+  };
+}
+
+export function applyFundamentalScalpBoost(item) {
+  if (!item?.fundamentals) return item;
+  return {
+    ...item,
+    scalp: item.scalp ? applyFundamentalPlanBoost(item.scalp, item.fundamentals) : item.scalp,
+    week: item.week ? applyFundamentalPlanBoost(item.week, item.fundamentals) : item.week,
+  };
 }
 
 function isConsolidating(candles, window = 15, maxRangePct = 0.08) {
@@ -369,60 +657,7 @@ export function analyzeQuote(quote) {
   if (bullHits >= 2 && bearHits >= 2) reasons.push("إشارات متعارضة — خفض الثقة");
   if (!reasons.length) reasons.push("إشارات مختلطة — راقب المستوى والحجم");
 
-  // Same-session scalp — still multi-factor, prefers room + volume + ATR
-  const volX = volumeRatio || 0;
-  let scalpScore = 0;
-  if (volX >= 1.4) scalpScore += 18;
-  if (volX >= 2) scalpScore += 10;
-  if (atrPct >= 0.015) scalpScore += 16;
-  if (atrPct >= 0.025) scalpScore += 6;
-  if (chgAbs >= 1.5) scalpScore += 8;
-  if (trend === "up") scalpScore += 10;
-  if (brokeResistance || exitedAccumulation) scalpScore += 12;
-  if (macdBuy) scalpScore += 6;
-  if (roomToRun) scalpScore += 8;
-  if (nearResistance && !brokeResistance) scalpScore -= 10;
-  if (rsi != null && rsi > 78) scalpScore -= 14;
-  if (rsi != null && rsi < 35 && trend !== "down") scalpScore += 6;
-  if (falseBreakRisk) scalpScore -= 10;
-  if (volX < 1.2) scalpScore -= 22;
-  if (belowEma200 && !brokeResistance) scalpScore -= 6;
-  scalpScore = Math.max(0, Math.min(100, Math.round(scalpScore)));
-
-  const scalpRange = atr14 || price * 0.02;
-  const scalpBuy = round(
-    Math.max(
-      price - scalpRange * 0.15,
-      support != null ? Math.min(price, support * 1.01) : price * 0.995
-    )
-  );
-  let scalpSell = round(price + scalpRange * 0.55);
-  if (resistance != null && !brokeResistance) {
-    scalpSell = round(Math.min(scalpSell, resistance * 0.995));
-  }
-  const scalpStop = round(price - scalpRange * 0.4);
-  const isScalpCandidate =
-    scalpScore >= 55 &&
-    volX >= 1.35 &&
-    atrPct >= 0.012 &&
-    (trend !== "down" || brokeResistance) &&
-    scalpSell > scalpBuy;
-
-  if (isScalpCandidate) signals.push("scalp_session");
-
   const company = buildCompanyProfile(quote);
-
-  const scalpReasons = [];
-  if (volX >= 1.4) scalpReasons.push(`سيولة مرتفعة اليوم ${round(volX, 1)}× المتوسط`);
-  if (atrPct >= 0.015) {
-    scalpReasons.push(`تذبذب يكفي للمضاربة (ATR حوالي ${(atrPct * 100).toFixed(1)}%)`);
-  }
-  if (brokeResistance) scalpReasons.push("كسر مقاومة يدعم ضربة سريعة");
-  if (roomToRun) scalpReasons.push("مسافة كافية قبل المقاومة");
-  if (nearResistance && !brokeResistance) scalpReasons.push("قرب مقاومة — مخاطرة انعكاس");
-  if (trend === "up") scalpReasons.push("اتجاه عام صاعد");
-  if (chgAbs >= 1.5) scalpReasons.push(`نشاط سعري ${round(chgPct, 1)}%`);
-  if (!scalpReasons.length) scalpReasons.push("فرص مضاربة محدودة — راقب الحجم");
 
   return {
     ticker: quote.ticker,
@@ -498,14 +733,7 @@ export function analyzeQuote(quote) {
       confidence: score,
       riskReward,
     },
-    scalp: {
-      eligible: isScalpCandidate,
-      score: scalpScore,
-      buy: scalpBuy,
-      sell: scalpSell,
-      stop: scalpStop,
-      reasons: scalpReasons,
-    },
+    scalp: null,
     reasons: [
       ...reasons,
       ...(company.notes || []).slice(0, 2),
@@ -644,6 +872,12 @@ export function enrichWithMarketContext(analyses, quotes) {
         `القطاع (${company.sectorAr}): ${peers.length} أقران في العينة`,
       ].slice(0, 8);
     }
+
+    const quote = byTicker.get(a.ticker);
+    a.depth = summarizeDepth(buildPriceDepth(quote || a, { levels: 10 }));
+
+    refineScalpCandidate(a);
+    refineWeekCandidate(a);
   }
 
   return analyses;
@@ -677,18 +911,20 @@ const SCREENS = {
   },
   scalp: {
     id: "scalp",
-    filter: (a) => a.scalp?.eligible || a.signals.includes("scalp_session"),
-    sort: (a, b) => (b.scalp?.score || 0) - (a.scalp?.score || 0),
+    filter: (a) => a.scalp?.eligible,
+    sort: (a, b) => (b.scalp?.score || 0) - (a.scalp?.score || 0) || (b.scalp?.rr || 0) - (a.scalp?.rr || 0),
+  },
+  week: {
+    id: "week",
+    filter: (a) => a.week?.eligible,
+    sort: (a, b) => (b.week?.score || 0) - (a.week?.score || 0) || (b.week?.rr || 0) - (a.week?.rr || 0),
   },
 };
 
 export function scanAnalyses(analyses, type = "top", limit = 10) {
   const screen = SCREENS[type] || SCREENS.top;
   const n = Math.max(1, Math.min(50, Number(limit) || 10));
-  return analyses
-    .filter(screen.filter)
-    .sort(screen.sort)
-    .slice(0, n);
+  return analyses.filter(screen.filter).sort(screen.sort).slice(0, n);
 }
 
 export function compactForAi(analyses, limit = 40) {
@@ -732,7 +968,14 @@ export function compactForAi(analyses, limit = 40) {
     t2: a.trade.target2,
     scalpBuy: a.scalp?.buy,
     scalpSell: a.scalp?.sell,
+    scalpStop: a.scalp?.stop,
     scalpScore: a.scalp?.score,
+    scalpEligible: a.scalp?.eligible,
+    weekBuy: a.week?.buy,
+    weekSell: a.week?.sell,
+    weekStop: a.week?.stop,
+    weekScore: a.week?.score,
+    weekEligible: a.week?.eligible,
     market: a.market,
     considerations: a.considerations,
     reasons: a.reasons.slice(0, 5),

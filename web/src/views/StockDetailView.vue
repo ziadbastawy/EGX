@@ -2,6 +2,7 @@
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import CandleChart from "../components/CandleChart.vue";
+import PriceDepthPanel from "../components/PriceDepthPanel.vue";
 import { useI18n } from "../composables/useI18n.js";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useAiSettings } from "../composables/useAiSettings.js";
@@ -214,6 +215,8 @@ async function askAi() {
           </dl>
         </div>
       </section>
+
+      <!-- <PriceDepthPanel :quote="quote" :locale="locale" /> -->
 
       <section class="company-panel">
         <div class="analysis-head">

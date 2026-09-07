@@ -16,10 +16,7 @@ const { get: getFundamentals, payload: fundPayload } = useFundamentals({
   pollMs: 30_000,
 });
 
-// Only surface the AI assistant once the scraped fundamentals are available,
-// so its recommendations can factor in the scraped data.
 const fundReady = computed(() => (fundPayload.value.results || []).length > 0);
-
 const query = ref("");
 
 const filtered = computed(() => {

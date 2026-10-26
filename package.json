@@ -15,7 +15,8 @@
     "start": "node src/server.js",
     "view": "vite --config web/vite.config.js",
     "dev": "node scripts/dev-all.js",
-    "build": "vite build --config web/vite.config.js"
+    "build": "vite build --config web/vite.config.js",
+    "backtest": "node scripts/backtest.js"
   },
   "engines": {
     "node": ">=22.13"

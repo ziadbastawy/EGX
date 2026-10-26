@@ -1,3 +1,4 @@
+import { getConfig } from "../src/config.js";
 import { closePool, isDbConfigured } from "../src/lib/db/pool.js";
 import { isoDateStartMs, rangeStartMs } from "../src/lib/mubasherCsv.js";
 import { fetchHistoricalBars } from "../src/lib/fetchHistoricalBars.js";
@@ -27,8 +28,9 @@ function parseArgs(argv) {
   const fromDate = argValue(argv, "--from") || process.env.FROM || null;
   const toDate = argValue(argv, "--to") || process.env.TO || null;
   const limitRaw = argValue(argv, "--limit") || process.env.LIMIT || null;
+  // Default to the configured universe (UNIVERSE=egx30 | all; SYMBOLS overrides)
   const symbols =
-    parseCsvList(argValue(argv, "--symbols")) || parseCsvList(process.env.SYMBOLS);
+    parseCsvList(argValue(argv, "--symbols")) || getConfig().symbols.map((s) => s.ticker);
   const providerCode = (
     argValue(argv, "--provider") ||
     process.env.PROVIDER ||

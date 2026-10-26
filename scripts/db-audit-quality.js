@@ -1,3 +1,4 @@
+import { getConfig } from "../src/config.js";
 import { closePool, isDbConfigured } from "../src/lib/db/pool.js";
 import { auditHistoricalQuality } from "../src/persistence/auditHistoricalQuality.js";
 
@@ -22,8 +23,9 @@ if (!isDbConfigured()) {
   process.exit(1);
 }
 
+// Default to the configured universe (UNIVERSE=egx30 | all; SYMBOLS overrides)
 const tickers =
-  parseCsvList(argValue(process.argv, "--symbols")) || parseCsvList(process.env.SYMBOLS);
+  parseCsvList(argValue(process.argv, "--symbols")) || getConfig().symbols.map((s) => s.ticker);
 const sourceKind = argValue(process.argv, "--source-kind") || process.env.SOURCE_KIND || null;
 
 try {

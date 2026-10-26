@@ -1,5 +1,7 @@
 /** Volume-at-price ladder from daily candles. Not a live L2 order book. */
 
+const DEPTH_WINDOW = 63;
+
 function roundTo(n, tick) {
   if (n == null || !Number.isFinite(n) || !tick) return null;
   return Math.round(n / tick) * tick;
@@ -33,9 +35,10 @@ function fmtPrice(n, tick) {
  * Spread each candle's volume across its [low, high] range in tick steps.
  */
 export function buildPriceDepth(quote, { levels = 10 } = {}) {
-  const candles = (quote?.candles || []).filter(
-    (c) => c && Number.isFinite(c.c) && Number.isFinite(c.v) && c.v > 0
-  );
+  // Volume-at-price over the last ~3 months only, regardless of how much history is loaded.
+  const candles = (quote?.candles || [])
+    .slice(-DEPTH_WINDOW)
+    .filter((c) => c && Number.isFinite(c.c) && Number.isFinite(c.v) && c.v > 0);
   const last = Number(quote?.price ?? candles.at(-1)?.c);
   if (!candles.length || !Number.isFinite(last)) {
     return {

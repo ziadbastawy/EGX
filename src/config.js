@@ -11,7 +11,8 @@ export const ROOT = path.join(__dirname, "..");
 export const OUTPUT_DIR = path.join(ROOT, "output");
 
 export function getConfig() {
-  const range = process.env.RANGE || "3mo";
+  // 1y so EMA50/EMA200 and MACD are warmed up (3mo ≈ 63 bars never reached EMA200)
+  const range = process.env.RANGE || "1y";
   const intervalSec = process.env.INTERVAL ? Number(process.env.INTERVAL) : null;
   const keepHistory = process.env.KEEP_HISTORY === "1";
   // mubasher (default) | yahoo | auto (mubasher then yahoo fallback)

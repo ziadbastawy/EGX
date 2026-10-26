@@ -14,7 +14,8 @@ import { getConfig, OUTPUT_DIR } from "../src/config.js";
 import { closePool, getPool, isDbConfigured } from "../src/lib/db/pool.js";
 import { analyzeUniverse } from "../src/lib/indicators.js";
 
-const WINDOW = 63; // ≈ RANGE=3mo, what the live scrape feeds the analysis
+// ≈ RANGE=1y, what the live scrape feeds the analysis (--window 63 replays the old 3mo setup)
+const WINDOW = Number(argValue(process.argv.slice(2), "--window") || 250);
 const HORIZONS = [1, 5, 20];
 const PLAN_HORIZON = { trade: 10, week: 5, scalp: 2 };
 // EGX daily price limits are well under this; a bigger one-day move is a split/bonus artefact.
@@ -38,6 +39,10 @@ function parseCsvList(value) {
 
 const argv = process.argv.slice(2);
 const FROM = argValue(argv, "--from") || "2020-01-02";
+// Load earlier bars so the first evaluated session already has a full WINDOW of history.
+const LOAD_FROM = new Date(Date.parse(`${FROM}T00:00:00Z`) - Math.ceil(WINDOW * 1.6) * 86400000)
+  .toISOString()
+  .slice(0, 10);
 const TO = argValue(argv, "--to") || null;
 const FEE_PCT = Number(argValue(argv, "--fee") ?? 0.25); // per side, % of value
 const universe = getConfig().symbols;
@@ -59,7 +64,7 @@ async function loadBars() {
         AND ($3::date IS NULL OR b.session_date <= $3::date)
         AND b.close > 0
       ORDER BY i.display_ticker, b.session_date, b.observation_seq`,
-    [tickers, FROM, TO]
+    [tickers, LOAD_FROM, TO]
   );
   const byTicker = new Map();
   for (const r of rows) {
@@ -162,7 +167,9 @@ for (const [ticker, bars] of byTicker) {
   });
 }
 
-const dates = [...new Set([...series.values()].flatMap((s) => s.bars.map((b) => b.d)))].sort();
+const dates = [...new Set([...series.values()].flatMap((s) => s.bars.map((b) => b.d)))]
+  .filter((d) => d >= FROM)
+  .sort();
 console.log(
   `Backtest — ${series.size} tickers · ${dates[0]} → ${dates.at(-1)} · ${dates.length} sessions · fee ${FEE_PCT}%/side`
 );

@@ -3,6 +3,10 @@
 import { buildCompanyProfile } from "./companyContext.js";
 import { buildPriceDepth, summarizeDepth } from "./priceDepth.js";
 
+// Average daily traded value thresholds (EGP) for liquidityTier.
+const LIQUIDITY_LOW_EGP = 5e6;
+const LIQUIDITY_HIGH_EGP = 100e6;
+
 function last(arr) {
   return arr.length ? arr[arr.length - 1] : null;
 }
@@ -189,7 +193,6 @@ function confluenceCount(a) {
     hasSignal(a, "bounce_setup"),
     hasSignal(a, "high_volume"),
     (a.market?.rsVsMarket ?? 0) >= 1,
-    a.depth?.bidCushion,
   ].filter(Boolean).length;
 }
 
@@ -220,12 +223,9 @@ function refineScalpCandidate(a) {
   const volX = ind.volumeRatio || 0;
   const atrPct = (ind.atrPct || 0) / 100;
   const isBreakout = hasSignal(a, "breakout_volume");
-  let { buy, sell, stop } = sessionLevels(price, ind.atr, ind.support, ind.resistance, isBreakout);
-  const d = a.depth;
-  if (d?.wallAskPrice != null && d.wallAskPrice > price && !isBreakout) {
-    const capped = px(d.wallAskPrice * 0.995, price);
-    if (capped > price) sell = Math.min(sell, capped);
-  }
+  // a.depth is estimated from daily candle volume (not a real order book) — display only,
+  // so it no longer moves levels, scores or eligibility.
+  const { buy, sell, stop } = sessionLevels(price, ind.atr, ind.support, ind.resistance, isBreakout);
   const rr = rewardRisk(price, sell, stop);
   const flags = hardRiskFlags(a);
   const hits = confluenceCount(a);
@@ -248,12 +248,6 @@ function refineScalpCandidate(a) {
   if (rr != null && rr >= 2) score += 4;
   if (hits >= 3) score += 6;
   if (a.score >= 65) score += 4;
-  if (d?.bidCushion) score += 8;
-  if (d?.ratio != null && d.ratio >= 1.5) score += 4;
-  if (d?.pocDistPct != null && d.pocDistPct < -0.3) score += 4;
-  if (d?.pocDistPct != null && d.pocDistPct > 1) score -= 5;
-  if (d?.thin) score -= 12;
-  if (d?.askWall && !isBreakout) score -= 10;
   score -= flags.length * 10;
   score = Math.max(0, Math.min(92, Math.round(score)));
 
@@ -265,8 +259,7 @@ function refineScalpCandidate(a) {
     validLongLevels(price, buy, sell, stop) &&
     rr != null &&
     rr >= 1.3 &&
-    score >= 58 &&
-    !(d?.thin);
+    score >= 58;
 
   const reasons = [];
   if (volX >= 1.4) reasons.push(`سيولة ${round(volX, 1)}× متوسط 20 يوم`);
@@ -274,10 +267,6 @@ function refineScalpCandidate(a) {
   if (hasSignal(a, "macd_buy")) reasons.push("تقاطع MACD شراء");
   if (hasSignal(a, "bounce_setup")) reasons.push("ارتداد قرب الدعم");
   if (cons.trend === "up") reasons.push("اتجاه صاعد");
-  if (d?.bidCushion) reasons.push(`عمق داعم تحت السعر (طلبات/عروض ${d.ratio}:1)`);
-  if (d?.askWall && !isBreakout) reasons.push("جدار عروض قريب — صعب المضاربة لأعلى");
-  if (d?.pocDistPct != null && d.pocDistPct < -0.3) reasons.push("تركيز الحجم تحت السعر (دعم)");
-  if (d?.thin) reasons.push("عمق ضعيف قرب آخر سعر");
   if (rr != null) reasons.push(`عائد/مخاطرة ${rr}:1 من السعر الحالي`);
   if (!eligible) reasons.push(...flags.map((f) => `مستبعد: ${f}`));
 
@@ -322,10 +311,6 @@ function refineWeekCandidate(a) {
   if (rr != null && rr >= 1.6) score += 6;
   if (a.market?.rsVsSector != null && a.market.rsVsSector >= 1.5) score += 3;
   if (a.market?.liquidityTier === "low") score -= 8;
-  if (a.depth?.bidCushion) score += 5;
-  if (a.depth?.thin) score -= 6;
-  if (a.depth?.askWall) score -= 6;
-  if (a.depth?.pocDistPct != null && a.depth.pocDistPct < -0.5) score += 3;
   score -= flags.length * 8;
   score = Math.max(0, Math.min(92, Math.round(score)));
 
@@ -343,7 +328,6 @@ function refineWeekCandidate(a) {
   if (cons.trend === "up") reasons.push("اتجاه صاعد يناسب أفق أسبوع");
   if (cons.aboveEma200) reasons.push("فوق EMA200");
   if (hasSignal(a, "macd_buy")) reasons.push("MACD يدعم الاستمرار");
-  if (a.depth?.bidCushion) reasons.push(`عمق داعم تحت السعر (${a.depth.ratio}:1)`);
   if (rr != null) reasons.push(`عائد/مخاطرة ${rr}:1 للهدف الأول`);
   if (!eligible) reasons.push(...flags.map((f) => `مستبعد: ${f}`));
 
@@ -449,6 +433,8 @@ export function analyzeQuote(quote) {
   const prevHist = hist[hist.length - 2];
 
   const avgVol20 = mean(volumes.slice(-21, -1));
+  // Average daily traded value (EGP) — the cross-stock liquidity measure.
+  const avgValue20 = mean(candles.slice(-20).map((c) => (c.v || 0) * c.c));
   const lastVol = last(volumes) || 0;
   const volumeRatio = avgVol20 ? lastVol / avgVol20 : null;
 
@@ -680,6 +666,7 @@ export function analyzeQuote(quote) {
       atr: round(atr14),
       atrPct: round(atrPct * 100, 2),
       volumeRatio: round(volumeRatio, 2),
+      avgValue20: round(avgValue20, 0),
       trend,
       distToSupportPct,
       distToResistancePct,
@@ -761,10 +748,6 @@ export function enrichWithMarketContext(analyses, quotes) {
 
   const byTicker = new Map((quotes || []).map((q) => [q.ticker, q]));
   const marketMedChg = median(analyses.map((a) => a.changePercent));
-  const volSorted = [...analyses]
-    .map((a) => a.indicators?.volumeRatio)
-    .filter((v) => v != null)
-    .sort((a, b) => a - b);
 
   const sectorBuckets = new Map();
   for (const a of analyses) {
@@ -792,11 +775,12 @@ export function enrichWithMarketContext(analyses, quotes) {
     const rsSector =
       a.changePercent != null && peerMed != null ? round(a.changePercent - peerMed, 2) : null;
 
+    // Liquidity = average daily traded value, not volume vs the stock's own average
+    // (that made COMI "illiquid" on a quiet day and a micro-cap "liquid" on a busy one).
     let liquidityTier = "unknown";
-    const volX = a.indicators?.volumeRatio;
-    if (volX != null && volSorted.length) {
-      const rank = volSorted.filter((v) => v <= volX).length / volSorted.length;
-      liquidityTier = rank >= 0.75 ? "high" : rank <= 0.25 ? "low" : "mid";
+    const value = a.indicators?.avgValue20;
+    if (value != null) {
+      liquidityTier = value >= LIQUIDITY_HIGH_EGP ? "high" : value < LIQUIDITY_LOW_EGP ? "low" : "mid";
     }
 
     const market = {

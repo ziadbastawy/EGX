@@ -1,5 +1,7 @@
 /** Lightweight per-card stats from daily candles (same definitions as src/lib/indicators.js). */
 
+const PERIOD_BARS = 63; // ≈ 3 months of EGX sessions
+
 function emaLast(values, period) {
   if (values.length < period) return null;
   const k = 2 / (period + 1);
@@ -49,14 +51,17 @@ export function cardStats(quote) {
   const avgVol = prior.length ? prior.reduce((s, v) => s + v, 0) / prior.length : null;
   const volume = last?.v ?? null;
 
-  const first = closes[0];
+  // Sparkline, 3M change and 3M range always cover the last ~3 months of sessions.
+  const recent = candles.slice(-PERIOD_BARS);
+  const recentCloses = recent.map((c) => c.c);
+  const first = recentCloses[0];
   const periodChangePct = first && price != null ? ((price - first) / first) * 100 : null;
 
-  const lows = candles.map((c) => c.l ?? c.c);
-  const highs = candles.map((c) => c.h ?? c.c);
+  const lows = recent.map((c) => c.l ?? c.c);
+  const highs = recent.map((c) => c.h ?? c.c);
 
   return {
-    closes,
+    closes: recentCloses,
     trend,
     rsi: rsiLast(closes),
     volume,

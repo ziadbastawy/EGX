@@ -42,7 +42,7 @@ const messages = {
     aiLoading: "جارِ التحليل…",
     aiError: "فشل المقترح",
     aiWaitingData: "جارِ تجهيز بيانات السوق والمؤشرات الأساسية… سيظهر مساعد السوق بعد اكتمال السحب.",
-    aiConfidence: "الثقة",
+    aiConfidence: "ثقة AI (تقدير ذاتي غير مُختبر)",
     aiDisclaimer: "تحليل تعليمي فقط — مش نصيحة استثمارية. راجع بنفسك قبل أي قرار.",
     aiPlansTitle: "جدول نوع الصفقة · أسعار الشراء والبيع",
     aiConsiderationsTitle: "كل الاعتبارات",
@@ -231,6 +231,12 @@ const messages = {
     scalpAiCta: "مقترح AI للمضاربة",
     scalpDisclaimer:
       "مضاربة تعليمية فقط من بيانات يومية — مش نصيحة استثمارية. راقب السيولة والوقت قبل أي صفقة.",
+    scalpBacktestWarn:
+      "تحذير: في اختبار تاريخي على أسهم EGX30 (2020–2026)، خطة المضاربة دي خسرت في المتوسط 0.5% في الصفقة بعد العمولات، ونجحت في 36% بس من الصفقات. للتعلّم فقط — مش توصية.",
+    weekBacktestWarn:
+      "ملاحظة: في نفس الاختبار، خطة الأسبوع كسبت في المتوسط ‎+0.2%‎ للصفقة بعد العمولات (نجاح 41%) — أقل من مجرد الاحتفاظ بأي سهم من EGX30 لمدة أسبوع (‎+0.7%‎).",
+    scoreLabel: "التقييم",
+    aiCardConfidence: "تقدير AI",
     nowPrice: "السعر الآن",
     aiAction: {
       buy: "شراء",
@@ -405,7 +411,7 @@ const messages = {
     aiLoading: "Analyzing…",
     aiError: "Suggestion failed",
     aiWaitingData: "Preparing market data and fundamentals… the assistant appears once the scrape finishes.",
-    aiConfidence: "Confidence",
+    aiConfidence: "AI confidence (self-rated, untested)",
     aiDisclaimer: "Educational analysis only — not investment advice. Review before any decision.",
     aiPlansTitle: "Trade type table · buy & sell prices",
     aiConsiderationsTitle: "All considerations",
@@ -595,6 +601,12 @@ const messages = {
     scalpAiCta: "AI scalp suggestion",
     scalpDisclaimer:
       "Educational scalp levels from daily data — not investment advice. Check liquidity and timing first.",
+    scalpBacktestWarn:
+      "Warning: in a backtest on EGX30 stocks (2020–2026), this scalp plan lost 0.5% per trade on average after fees and won only 36% of trades. Educational only — not a recommendation.",
+    weekBacktestWarn:
+      "Note: in the same backtest, the week plan made +0.2% per trade on average after fees (41% win rate) — less than simply holding any EGX30 stock for a week (+0.7%).",
+    scoreLabel: "Score",
+    aiCardConfidence: "AI estimate",
     nowPrice: "Now",
     aiAction: {
       buy: "Buy",

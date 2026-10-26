@@ -18,12 +18,14 @@ const sessionDay = computed(() => formatSessionDay(getNextEgxSessionDate(), loca
     </header>
 
     <h2 class="scalp-group-title">{{ t.scalpSessionTitle(sessionDay) }}</h2>
+    <p class="backtest-warn backtest-warn--loss">{{ t.scalpBacktestWarn }}</p>
     <div class="scalp-duo">
       <ScalpSession horizon="session" mode="local" :locale="locale" :limit="8" />
       <ScalpSession horizon="session" mode="ai" :locale="locale" :limit="6" />
     </div>
 
     <h2 class="scalp-group-title">{{ t.weekGroupTitle }}</h2>
+    <p class="backtest-warn">{{ t.weekBacktestWarn }}</p>
     <div class="scalp-duo">
       <ScalpSession horizon="week" mode="local" :locale="locale" :limit="8" />
       <ScalpSession horizon="week" mode="ai" :locale="locale" :limit="6" />

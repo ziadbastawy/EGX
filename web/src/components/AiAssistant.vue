@@ -265,7 +265,7 @@ function openStock(ticker) {
                 <p class="pick-name">{{ pickName(pick) || shortTicker(pick.ticker) }}</p>
                 <div class="pick-top">
                   <span class="badge">{{ actionLabel(pick.action) }}</span>
-                  <span class="conf">{{ pick.confidence }}/100</span>
+                  <span class="conf">{{ t.scoreLabel }} {{ pick.confidence }}/100</span>
                 </div>
                 <p v-if="pick.reason" class="pick-reason">{{ pick.reason }}</p>
                 <dl class="pick-levels">
@@ -299,7 +299,7 @@ function openStock(ticker) {
                 <div class="pick-top">
                   <span class="ai-tag">{{ t.aiTag }}</span>
                   <span class="badge">{{ actionLabel(pick.action) }}</span>
-                  <span class="conf">{{ pick.confidence }}/100</span>
+                  <span class="conf">{{ t.aiCardConfidence }} {{ pick.confidence }}/100</span>
                 </div>
                 <p v-if="pick.reason" class="pick-reason">{{ pick.reason }}</p>
                 <dl class="pick-levels">

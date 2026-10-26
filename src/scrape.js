@@ -3,6 +3,8 @@ import { fetchQuote as fetchYahooQuote } from "./lib/yahoo.js";
 import { fetchMubasherQuote } from "./lib/mubasherQuote.js";
 import { saveResults } from "./lib/storage.js";
 import { isMain, sleep } from "./lib/utils.js";
+import { isDbConfigured, closePool } from "./lib/db/pool.js";
+import { persistScrapeRun } from "./persistence/persistScrapeRun.js";
 
 const BATCH_SIZE = Number(process.env.BATCH_SIZE) || 8;
 const BATCH_DELAY_MS = Number(process.env.BATCH_DELAY_MS) || 250;
@@ -54,11 +56,18 @@ export async function runScrape(options = {}) {
 
   const results = [];
   const errors = [];
+  const rawBarsByTicker = new Map();
 
   settled.forEach((item, i) => {
     const ticker = cfg.symbols[i].ticker;
     if (item.status === "fulfilled") {
       const quote = item.value;
+      if (quote.rawCsvCandles?.length) {
+        rawBarsByTicker.set(ticker, quote.rawCsvCandles);
+      } else if (String(quote.source || "").includes("yahoo") && quote.candles?.length) {
+        rawBarsByTicker.set(ticker, quote.candles.map((c) => ({ ...c })));
+      }
+      delete quote.rawCsvCandles;
       results.push(quote);
       const pct =
         quote.changePercent != null ? ` (${quote.changePercent.toFixed(2)}%)` : "";
@@ -87,6 +96,17 @@ export async function runScrape(options = {}) {
   console.log(`Vue data → ${webLatestPath}`);
   if (errors.length) console.log(`Failed: ${errors.length}`);
 
+  if (isDbConfigured()) {
+    try {
+      const db = await persistScrapeRun(payload, rawBarsByTicker);
+      console.log(
+        `PostgreSQL persist → snapshot ${db.snapshotId} · ${db.quotes} quotes · ${db.bars} raw bars`
+      );
+    } catch (err) {
+      console.warn(`PostgreSQL persist failed (JSON already saved): ${err.message}`);
+    }
+  }
+
   return { payload, webLatestPath, errors, ms };
 }
 
@@ -104,5 +124,6 @@ if (isMain(import.meta.url)) {
     .catch((err) => {
       console.error(err);
       process.exit(1);
-    });
+    })
+    .finally(() => closePool());
 }

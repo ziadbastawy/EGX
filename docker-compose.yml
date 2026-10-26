@@ -1,0 +1,21 @@
+# Local PostgreSQL only. Do not use for Render/production.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: egx-postgres
+    environment:
+      POSTGRES_USER: egx
+      POSTGRES_PASSWORD: egx
+      POSTGRES_DB: egx
+    ports:
+      - "5432:5432"
+    volumes:
+      - egx_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U egx -d egx"]
+      interval: 2s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  egx_pgdata:

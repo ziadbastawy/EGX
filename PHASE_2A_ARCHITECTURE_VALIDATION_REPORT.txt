@@ -1,0 +1,412 @@
+# Phase 2A Architecture Validation Report
+
+Status: Architecture validation pass only. Not an architectural decision.
+Date: 23 August 2026
+Production code: not modified.
+Packages: not changed.
+Files modified by the validation pass: this report only (export).
+
+Evidence classes used below: VERIFIED · PARTIALLY VERIFIED · NOT VERIFIED · CONTRADICTED · UNKNOWN
+
+Prior evidence (cite, do not invent):
+
+- PHASE_2A_DOMAIN_PERSISTENCE_ARCHITECTURE.md
+- PHASE_1_75_DATA_VALIDATION_REPORT.txt
+- docs/phase-1.5-provider-benchmark.md
+- research/benchmark/mubasher-integrity.mjs
+- research/benchmark/out/mubasher-integrity.json
+
+------------------------------------------------------------------------
+
+## 1. Executive Verdict
+
+- The proposal’s core current-state picture is correct: JSON files, no database, no CA table, scores computed in memory, AI replies not stored as product audit records.
+- The hard Phase 1.75 constraints are justified: keep raw CSV OHLCV, do not treat vendor change/changePercentage as truth, keep live last distinct from CSV close, do not feed unadjusted long windows as research-grade history.
+- The proposed identity + mapping + raw bars + CA + validation + fundamentals core matches what the repo actually needs for Phase 2 adapters.
+- Several items classified REQUIRED NOW / REQUIRED SOON are not required for the first persistence increment: exchange, full trading_calendar, adjustment_run + materialized ohlcv_bar_adjusted, and the four AI version tables.
+- Current production already has a split-brain serving model: GitHub Pages can serve Mubasher/market-snapshot.json, while Render builds with PRICE_SOURCE=yahoo. Dual-write design must account for that, not only “Vue reads files / API reads files.”
+- Live overlay is stronger than the proposal states: if the last CSV day is not Cairo “today,” fetchMubasherQuote appends a today-dated live bar. Weekend scrapes can invent a non-session bar.
+- mubasher-integrity.json does not contain the COMI 2025-12-16/17 split rows. That split is documented in Phase 1.75 text, not in the committed JSON artifact.
+- PostgreSQL + JSONB vs MongoDB: neither is in the repo. For this domain, relational uniqueness/FKs are the concrete advantage; MongoDB does not solve a problem JSONB does not. This is evidence, not a platform decision.
+- Do not implement schema yet. Blocking decisions remain: store, canonical close, whether Phase 2 computes adjusted series, duplicate-bar policy, license, and whether AI audit is in the same increment.
+
+------------------------------------------------------------------------
+
+## 2. Current-State Validation
+
+| Claim | Status | Repository Evidence | Notes |
+|---|---|---|---|
+| No database / ORM / Postgres / Mongo | VERIFIED | package.json deps: @cursor/sdk, cheerio, dotenv, vue, vue-router only; no pg/mongoose/ORM | Search of src/ and web/ found no DB client. Mentions exist only in the proposal. |
+| No test runner / *.test.js / *.spec.js | VERIFIED | glob of *.test.js/*.spec.js = 0; package.json scripts have no test command | Informal research script does exist: research/benchmark/mubasher-integrity.mjs. Proposal §2 “UNKNOWN if informal scripts exist” can be upgraded. |
+| Universe ~224 Yahoo-style TICKER.CA | VERIFIED | data/symbols.js comment L1; DEFAULT_SYMBOLS.length = 224 | Identity in app code is ticker (COMI.CA), not ISIN. |
+| 17 yahoo: overrides | PARTIALLY VERIFIED | 17 rows with yahoo:; src/lib/yahoo.js fetchTicker = yahoo \|\| ticker (L14–15) | Proposal calls them “ISIN-like.” 15 are EGS…CA; VLMR.CA → EKHO.CA and VLMRA.CA → EKHOA.CA are ticker aliases, not ISINs (data/symbols.js L1109–1118). |
+| PRICE_SOURCE default mubasher | PARTIALLY VERIFIED | src/config.js getConfig() L15 | Render production is Yahoo: render.yaml L15, L21–22 PRICE_SOURCE=yahoo. Local default ≠ deployed API. |
+| RANGE default 3mo | VERIFIED | src/config.js L11 | Range is applied at CSV parse time, not after storing full history. |
+| KEEP_HISTORY default off; stamps whole payloads | VERIFIED | src/config.js L13; src/lib/storage.js L18–21 prices-${Date.now()}.json | Does not version fundamentals (src/scrape-fundamentals.js saveJson overwrites only). |
+| Dual write output/ + web/public/ | VERIFIED | storage.js L15–16; scrape-fundamentals.js L31–34 | output/ gitignored (.gitignore L4). |
+| latest.json gitignored; overwritten each scrape | VERIFIED | .gitignore L5; storage.js writeFile of full payload | Vue polls this file (useMarketData.js L15). |
+| fundamentals.json not gitignored; overwritten | VERIFIED | .gitignore has no fundamentals.json; file is present; scrape-fundamentals.js overwrite | Committed file scrapedAt 2026-08-17 (web/public/fundamentals.json L2); Phase 1.5/1.75 stale-vs-tape claim holds vs 2026-08-20 prices. Count 221 vs universe 224. |
+| Boot scrape if latest.json missing/empty | VERIFIED | ensureMarketData.js L72–86; server.js listen → ensureMarketData() ~L1507 | API loadMarket() returns 503 and kicks scrape on ENOENT/empty (server.js L160–187). |
+| Watch loop default 20s | VERIFIED | src/watch.js L4 INTERVAL \|\| 20 | getConfig().intervalSec is null unless INTERVAL is set (config.js L12). Payload watchIntervalSec is set only when watch passes it (scrape.js L44, L76). |
+| Mubasher quote + CSV parse, no adjClose | VERIFIED | mubasherQuote.js parseCsvCandles L47–64: date, o,h,l,c,v only | Production parser does not regex-validate dates (integrity script does, mubasher-integrity.mjs L38–41). Invalid OHLC is stored, not flagged. |
+| Live last overwrites last candle if Cairo day == today | PARTIALLY VERIFIED | fetchMubasherQuote L152–170 | If lastDay === today: replace last bar. Else: append a new bar dated today (L169). Proposal §2.1 omits the append path. Weekend scrape of Thursday tape can persist a Saturday-dated bar. |
+| bar.close treated as previous close | VERIFIED | mubasherQuote.js L148 comment + assignment | Yahoo uses previous candle close instead (yahoo.js L51–53). Provider previousClose semantics already differ. |
+| Vendor change fields passed through when present | VERIFIED | mubasherQuote.js L179–190 | Recompute only if vendor fields are null. Phase 1.75 10/16 and 12/16 failures are in mubasher-integrity.json changeCheck (e.g. COMI bar +1 / 0.74% vs calc +2.03 / +1.49%, L82–90). |
+| Live last ≠ CSV close on 14/16 | VERIFIED | PHASE_1_75 §6; JSON e.g. COMI live 138.03 vs CSV 137 (mubasher-integrity.json L71–74) | JUFO and CIRA exact in the report. Semantic last vs official close: UNKNOWN (Phase 1.75 §6). |
+| RANGE truncates CSV; full file discarded | VERIFIED | parseCsvCandles L48–55; loadCandles caches range-filtered candles (L121–123, comment L111–113) | Proposal wording “except in-memory candleCache” slightly overstates: cache is not the full CSV. TTL default 6h (mubasherQuote.js L10). |
+| Yahoo chart; adjclose unused | VERIFIED | yahoo.js L28–45 uses indicators.quote only | Yahoo HTTP 429 is Phase 1.5 documentation, not re-tested in this pass. |
+| mubasherCode strips .CA | VERIFIED | mubasher.js L29–35 | Canonical in-app id remains TICKER.CA; Mubasher path uses Reuters-like code. |
+| Fundamentals HTML keys PE/EPS/PB/… | VERIFIED | mubasher.js FUNDAMENTAL_KEYS L7–17; SUMMARY_KEYS L20–27 | Period TTM vs annual UNKNOWN. News/announcements parsed then dropped by pickFundamentals (scrape-fundamentals.js L13–24). /api/company still returns live news (mubasher.js L179–187; server.js L1360–1370). |
+| API recomputes technicals from latest.json | VERIFIED | server.js loadMarket + analyzeUniverse on /api/analyze L1342–1357, /api/scan L1391–1407 | Nothing writes indicator output to disk. |
+| analyzeQuote uses candles[].c as one series | VERIFIED | indicators.js L423–428 closes = candles.map(c => c.c) | Score 0–100 (L556–622); actionHint buy/hold/sell (L624–635). Later enrichWithMarketContext mutates score/actionHint again (L838–852). Scalp/week clamp to 92 (L258, L330, L389). |
+| Price depth is volume-at-price, not L2 | VERIFIED | priceDepth.js L1, buildPriceDepth L35–38 | |
+| Sector is name regex | VERIFIED | companyContext.js SECTOR_RULES L3+ | |
+| AI POST endpoints return JSON and do not write a product store | PARTIALLY VERIFIED | server.js /api/ask L1446–1459, /api/suggest L1462–1472, /api/suggest-scalp L1475–1485, /api/funds-advice L1432–1436, /api/funds-photo L1424–1429: sendJson only | Cursor path uses JsonlLocalAgentStore at .cursor-agents/ (server.js L33–36, Agent.create L355–358). That is SDK session storage, gitignored (.gitignore L9), not a reconstructable decision snapshot. OpenAI path has no store. |
+| Prompts inlined; models gpt-4o-mini / composer-2.5 | VERIFIED | server.js L292, L357; runAsk.js L51, L89 | Headers x-ai-provider / x-ai-key / x-ai-model (server.js L101–108). Keys live in browser useAiSettings.js (egx-ai-settings, XOR obfuscation L12–29). |
+| /api/suggest does not send internal scores | VERIFIED | buildSuggestion L756–760 “NOT sending our internal scoring” | /api/ask AI mode does send compactForAi snapshots including scores (server.js L1149–1186). Two different AI input contracts. |
+| /api/ask mode=local scanner fallback | VERIFIED | server.js L1452–1455 | Proposal §12 correctly wants local mode snapshotted too if audit is required. |
+| Fund holdings localStorage only | VERIFIED | useMyFunds.js egx-my-funds-v1 L4, L31–37 | /api/funds note: EGX tape, not live NAVs (server.js L1418). |
+| Browser auth, not a user table | VERIFIED | useAuth.js egx_auth_session L3, static email/password L6–7 | |
+| No equity Position/Order entities | VERIFIED | No matching domain types in src/ / web/ | Thndr fund list ≠ equity book. |
+| GitHub Pages + Render dual origin | VERIFIED | web/src/lib/api.js VITE_API_BASE / egx_api_base; .github/workflows/deploy-pages.yml; render.yaml | Gap: Pages build scrapes (default Mubasher) or copies web/public/market-snapshot.json (deploy-pages.yml L35–40). Render build scrapes Yahoo. UI JSON and API JSON can disagree today. market-snapshot.json is a committed persistence store the proposal table omits (scrapedAt 2026-08-11, priceSource: mubasher). |
+| COMI 1.1 split unadjusted in CSV | PARTIALLY VERIFIED | Documented TESTED in PHASE_1_75 §9 (117.5 → 106.82 on 2025-12-16/17) | Not present in research/benchmark/out/mubasher-integrity.json (target dates do not include 2025-12-16/17). JSON does contain 2008 spike-revert (COMI 6.44 → 27.69 → 6.61, L203–221). |
+| Duplicate CSV dates 4–5 / file | VERIFIED (research artifact) | Phase 1.75 §8; integrity duplicateDates | Production parseCsvCandles does not dedupe. A unique (instrument, session_date) would collide. |
+| Invalid OHLC common | VERIFIED (research artifact) | Phase 1.75 §8; EAST 2026-05-20 open>high in report | Production ingest does not quarantine these bars. |
+| EGX week Sun–Thu; 2021-08-20 Friday miss | VERIFIED | Phase 1.75 §5; sessionDate.js isEgxTradingDay weekday 0–4; integrity targets["2021-08-20"].exact | Holidays UNKNOWN. UI has a weekday calendar helper; there is no holiday file. |
+| EODHD / Twelve Data not tested (no keys) | VERIFIED as documentation | Phase 1.5/1.75; no provider modules in src/ | Do not seed live bars from those vendors in Phase 2. |
+| Redistribution license unknown | UNKNOWN | Stated in Phase 1.5 §2 and Phase 1.75 §17; no license file for Mubasher/Yahoo reuse | Blocking for persisting raw payloads. |
+| latest.json last bar = live overlay, so stored c ≠ CSV close | VERIFIED when overlay same-day path runs | fetchMubasherQuote L160–168 sets c: round4(price) | Quote price is last.c after overlay (L174–176). UI and indicators both see the mutated close. |
+
+------------------------------------------------------------------------
+
+## 3. Domain Invariants
+
+These are the invariants a future store must guarantee. They are derived from repo behavior and Phase 1.75/1.5 evidence, not from generic database advice.
+
+1. Raw vendor OHLCV is immutable. CSV (and Yahoo chart) prints must never be overwritten by split/dividend restatement, live last, or a later provider revision. Evidence: Phase 1.75 blocker; parseCsvCandles has no adjClose; COMI pre-split closes stay on old scale in the Phase 1.75 TESTED table.
+
+2. Live last and session/CSV close are distinct facts. bar.value and CSV c differed on 14/16 names. quote.price today is live last after overlay (mubasherQuote.js L143, L165, L176). Persisting only one “close” destroys auditability (Phase 1.75 condition 1).
+
+3. Overlay must not destroy the CSV last bar. Current code replaces or appends in the in-memory candle array (mubasherQuote.js L168–169). Persistence must store CSV close and live last, with an explicit overlay flag and the Cairo session date actually being overlaid — not “today” if today is not a session.
+
+4. Provider symbol is not canonical instrument identity. In-app id is TICKER.CA (data/symbols.js, normalizeTicker in server.js L79–85). Mubasher uses stripped Reuters-like codes (mubasherCode). Yahoo may use yahoo: overrides including ISINs and EKHO.CA. EODHD/Twelve conventions exist only in docs (COMI.EGX, EGS60121C018). Mapping rows must not collapse these into one string.
+
+5. Vendor change / changePercentage are untrusted. Failed independent calc on 10/16 and 12/16 (PHASE_1_75 §7; JSON changeCheck). They may be stored as vendor-supplied fields, never as the computed return used by scores or AI as ground truth.
+
+6. Corporate actions are independent events, not bar mutations. Mubasher CSV has no split/dividend flag. A 1.1 split is a separate fact. Unknown jumps (2008 spike-revert in JSON) must not be auto-written as splits.
+
+7. Adjusted series, if computed, is derived and versioned. Reproducible from: raw bars + a frozen CA set + a named method version. Until dividends/full CA calendar are known, any adjusted series is incomplete (PHASE_1_75 §9). It must never become the only stored tape.
+
+8. Duplicate session dates must be handled deterministically. Integrity counted 4–5 duplicate dates per CSV. Unique (instrument, provider, session_date) will fail unless first-wins / last-wins / keep-with-sequence is defined before schema.
+
+9. Invalid OHLC must not become trusted market data. Hundreds of open-outside-high/low flags per name (Phase 1.75 §8). Ingest may store them as raw, but validation must mark them; indicators must not treat them as clean.
+
+10. RANGE-filtered files are not the historical archive. latest.json / market-snapshot.json hold range candles (default 3mo). Full CSV exists only at the provider URL. Migration cannot treat current JSON as 25y history (PHASE_2A §17.4 is correct).
+
+11. Validation results are first-class, not log-only. Phase 2 gate is adapters/validation, not “fix the CSV.” Failures (last≠close, change mismatch, duplicates, jumps, CA-unadjusted windows) must remain queryable.
+
+12. Provider payload provenance is required where a number is later disputed. Re-parse and license audit need the quote JSON / CSV text if the architect allows storing them (license UNKNOWN). Normalized columns alone cannot explain a later vendor change.
+
+13. Historical snapshots must remain interpretable after providers change. data_snapshot.price_source, mapping verification_class, and scrape scraped_at are part of meaning. Render Yahoo vs Pages Mubasher already demonstrates two tapes for the same ticker.
+
+14. Scores/indicators are derived from a declared series. analyzeQuote has no series kind. Feeding unadjusted max-history across a known split contaminates EMA/RSI/MACD/score (indicators.js L427; Phase 1.75 §9). Derived output must record whether input was raw or adjusted.
+
+15. AI decisions, if audited, are reconstructable from the exact input sent, not from later market files. /api/suggest sends truncated raw candles (60/90) and live Mubasher HTML fundamentals; /api/ask sends scored compactForAi slices. A later CA backfill must not rewrite those inputs. Keys must never be stored (useAiSettings.js).
+
+16. Model / prompt / score identity is required for audit, not as three mandatory tables. Defaults and inline templates exist (gpt-4o-mini, composer-2.5, prompts in server.js). Capturing provider+model+prompt hash+git SHA of indicators.js at call time is the invariant; table shape is secondary.
+
+17. Fundamentals are a separate as-of snapshot, not a property of the last price bar. File can be days stale (fundamentals.json 2026-08-17 vs tape 2026-08-20). PE/EPS period type is UNKNOWN. Negative PE already exists outside the 16-name sample (AALR pe: -13.26 in committed file).
+
+18. Client secrets and fund holdings stay off the server store unless product scope changes. egx-ai-settings, egx_auth_session, egx-my-funds-v1 are browser-only.
+
+19. EGX session date is Africa/Cairo, not scrape wall-clock. CSV timestamps are parsed as T00:00:00+02:00 (mubasherQuote.js L54) while dayKeyCairo uses Africa/Cairo (L67–68). DST vs fixed +02:00 is an INFERRED risk (proposal §20.13). Bars must key by Cairo session date, not UTC scrape date.
+
+20. Unadjusted long history must not be labeled research-grade or used as Phase 4 backtest input. Phase 1.75 Phase-2 gate: YES adapters/validation; NO history-as-truth across CAs.
+
+------------------------------------------------------------------------
+
+## 4. Entity Review
+
+| Entity | Status | Evidence | Concern | Recommendation |
+|---|---|---|---|---|
+| instrument | REQUIRED NOW | 224-row DEFAULT_SYMBOLS; Phase 1.75 delisting UNKNOWN | reuters_code on instrument duplicates symbol/mapping | Keep one canonical EGX equity. Do not use Mubasher/Yahoo codes as the PK. |
+| symbol | REQUIRED NOW (can be thinner) | ticker vs yahoo vs mubasherCode | Overlaps provider_symbol_mapping | Either symbol or mapping as the identifier table; having both plus instrument.reuters_code is three copies of the same fact. |
+| provider | REQUIRED NOW (tiny) | priceSource on payload (scrape.js L75); quote.source (mubasher / yahoo-finance-chart / *-fallback) | A registry table is optional vs a checked enum | Needed as an identity; a four-row enum satisfies Phase 2. Do not build a vendor catalog product. |
+| provider_symbol_mapping | REQUIRED NOW | Phase 1.5/1.75 mapping table; 17 yahoo: overrides | EODHD/Twelve rows would be DOCS/LIST_TESTED only | Required. Seed Mubasher+Yahoo from repo; do not ingest untested vendor bars. |
+| data_snapshot | REQUIRED NOW | payload.scrapedAt/range/priceSource/errors (scrape.js L72–79) | KEEP_HISTORY already is a crude snapshot | Keep as the ingest unit replacing whole-file overwrite. |
+| quote | REQUIRED NOW | Quote scalars on each result; live last vs previousClose | Easy to smuggle overlay close into “the” price | Persist last, previous_close, vendor change*, as_of, source separately from raw bars. |
+| ohlcv_bar (raw) | REQUIRED NOW | CSV/Yahoo candles; integrity depth 5–25y | Unique on date will hit CSV duplicates; overlay currently mutates last bar | Raw table only. Unique key must include source_kind and a duplicate-sequence or first/last policy. |
+| corporate_action | REQUIRED NOW | Phase 1.75 blocker; COMI 1.1 documented | Full CA calendar UNKNOWN; 2008 spikes cause UNKNOWN | Store events + confidence. Seed COMI only with citation. Do not auto-label jumps. |
+| adjustment_run | PREMATURE for Phase 2 storage | No adjustment code exists; §15 says adjusted-as-truth is out | Useful later for reproducibility | Defer as a table. When adjustment is approved, a method_version + ca_set_hash is the invariant — can start as columns on a derived series, not a workflow system. |
+| ohlcv_bar_adjusted | FUTURE / not Phase 2 MVP | Phase 1.75: do not score unadjusted long windows as truth; do not run backtests | Materializing a second full tape before CA completeness invites false confidence | Defer materialization. CA storage is enough for Phase 2. Compute on demand later. |
+| fundamental_snapshot | REQUIRED NOW | Existing fundamentals.json; FUNDAMENTAL_KEYS | Stale vs prices; period_type UNKNOWN | As-of rows + source_url. Do not join as if contemporaneous with last quote. |
+| data_validation_result | REQUIRED NOW | Phase 1.75 checks; integrity script | Must not be only a research JSON | First-class ingest output. Quarantine ≠ delete raw. |
+| decision_snapshot | REQUIRED SOON if audit is a product requirement; not required by current app behavior | Endpoints return and drop (server.js POST handlers) | “Why 6 months ago?” is proposed, not implemented | Do not block bars/CA/validation on this. If kept, insert-only. |
+| input_context_snapshot | REQUIRED SOON as a field, not necessarily a table | Suggest vs ask send different payloads (server.js L660 vs L1183–1186) | Separate table duplicates decision_snapshot | Fold JSON + hashes into the decision row. |
+| prompt_version | PREMATURE as a table | Prompts are inline strings (server.js L665+, L756+, L1164+) | SHA of text at call time is the invariant | Store prompt_sha256 + text (or text ref) on the snapshot. Catalog table can wait. |
+| model_version | PREMATURE as a table | Captured at call: header or default (server.js L104, L292, L357) | LLM vendors change aliases under the same id | Store provider + model_id string on the snapshot. |
+| score_version | PREMATURE as a table | analyzeQuote unversioned; multiple score paths (universe vs scalp vs week) | Git SHA of indicators.js is enough | Only needed when AI/audit includes scores (/api/ask). Suggest path does not use them. |
+| exchange (proposed §9.1, not in user entity list but in §5) | PREMATURE | All production paths are EGX (mubasherQuote.js L217 exchange: "EGX") | Yahoo copies meta.fullExchangeName (yahoo.js L71) | Constant/column, not a table. |
+| trading_calendar / market_session | REQUIRED SOON for validation quality; not MVP tables | sessionDate.js; Friday 2021-08-20 miss; Saturday scrape issue | Official holidays UNKNOWN | Weekday rule + timezone now; holiday file later. |
+
+Duplication notes (do not redesign here):
+
+- instrument.reuters_code + symbol(scheme=reuters) + provider_symbol_mapping(mubasher, COMI) are the same mapping.
+- split as its own REQUIRED NOW entity (§5) duplicates corporate_action.type=split (§10).
+- quote last price vs ohlcv_bar with is_live_overlay can duplicate unless overlay bars are the only place live last lives, or quote is session-level only.
+- ai_analysis vs decision_snapshot vs input_context_snapshot are one immutable document in practice.
+- score vs technical_indicator_snapshot (§5 REQUIRED SOON) are derived; current product does not persist them.
+
+If removed, what is lost?
+
+- Drop instrument: no survivorship/rename story later (already UNKNOWN).
+- Drop mapping: cannot add EODHD/Twelve without rewriting identity.
+- Drop corporate_action: Phase 2 contract fails the Phase 1.75 gate.
+- Drop ohlcv_bar_adjusted now: nothing the current product uses — indicators still run on latest.json.
+- Drop AI version tables now: nothing breaks; historical “why” remains impossible, which is already true.
+
+------------------------------------------------------------------------
+
+## 5. PostgreSQL + JSONB vs MongoDB
+
+Comparison is against this repo’s requirements only. Neither engine exists in the project. Volume figures are INFERRED from 16-name CSV depths, not a production census of 224 names.
+
+| Requirement | PostgreSQL + JSONB | MongoDB | Evidence from this project |
+|---|---|---|---|
+| EGX instrument identity | Strong unique/FK story for one instrument, many codes | App-enforced uniqueness; easier to store duplicate COMI/COMI.CA as separate docs | Identity is already split across ticker, yahoo, mubasherCode |
+| Multi-provider symbol mapping | Native unique (provider, provider_symbol, valid_from) | Unique indexes possible; no FK to instrument | Phase 1.5 table; 17 Yahoo overrides |
+| Daily OHLCV | Relational uniqueness; date range SQL | Fine with compound indexes | ~1k–6k bars/name in sample; 224 names → order 10^5–10^6 rows if full CSV stored — not a scale argument against PG |
+| Corporate actions | Typed events + FK to instrument; join to bars by ex_date | Possible; CA application is application code | Blocker is integrity, not throughput |
+| Raw vs normalized vs adjusted | Separate tables + permissions/CHECK | Separate collections + discipline | JSON files cannot enforce “never overwrite raw” |
+| Validation results | JSONB payload + pass/fail columns | Natural documents | Trees already look like mubasher-integrity.json |
+| Fundamentals | Sparse JSONB + extracted PE/EPS | Natural documents | fundamentals.json is already a document |
+| AI decision snapshots | JSONB + TOAST | Natural documents | Prompt blobs are large; either works |
+| Versioning | FKs to version rows or hash columns | Embed hashes in the document | Current need is hashes, not a version graph |
+| Historical reconstruction | Snapshot row + FK to then-current mapping/CA set | Embed context document (easier point-in-time blob) | Reconstructability depends on what you store, not engine |
+| MVP scale | Low millions of daily bars is ordinary | Also ordinary | No repo evidence of write volume beyond ~224 quotes / 20s watch |
+| Node/Vue architecture | Needs a query layer or keep exporting JSON | Same | Vue reads static files (useMarketData.js); API is node:http (server.js) |
+| Render + GitHub Pages | Managed PG is an ops decision (Render free web in render.yaml has no database) | Same | Dual-write latest.json remains if Pages stays file-based |
+
+A. Where PostgreSQL gives a concrete architectural advantage
+
+- Enforcing one instrument, unique provider symbols, and CA rows that cannot dangle.
+- Making “raw bar row is not updated” a schema/permission rule rather than a convention.
+- Joining CA ex_date to raw bars without embedding CA inside every candle document.
+- Preventing two mappings from silently pointing at different instruments for the same provider symbol.
+
+B. Where MongoDB gives a concrete architectural advantage
+
+- Storing heterogeneous vendor payloads and AI prompt/context blobs with less schema work.
+- Point-in-time snapshot documents (input_context + output) match how latest.json already looks.
+- No migration/ORM ceremony for a team that today only writes JSON files.
+
+C. Whether MongoDB solves any problem PostgreSQL + JSONB does not
+
+- No, for this domain. JSONB covers vendor payloads, validation trees, fundamentals leftovers, and AI blobs. MongoDB’s document comfort does not restore CA integrity, last-vs-close, or mapping uniqueness.
+
+D. Integrity problems MongoDB would push into application code
+
+- Instrument uniqueness across Reuters / .CA / ISIN / .EGX.
+- ohlcv_bar immutability vs “just replace the document.”
+- Duplicate CSV dates (must still be a written policy).
+- Referential link from adjusted series → raw bar + adjustment method + CA set.
+- Orphan validation results and CA rows after symbol remaps.
+
+E. Whether projected volume is a reason to avoid PostgreSQL
+
+- No evidence that it is. 16 names × up to ~6k rows; 224 names even at 6k is ~1.3M rows. Watch currently overwrites one JSON file, not a bar warehouse. Volume is not the decision driver; identity + CA + overlay semantics are.
+
+Not a platform decision. If a database is approved, the domain argues for a relational core. If the architect prefers Mongo, the same invariants must be implemented in application code. JSON files cannot carry them.
+
+------------------------------------------------------------------------
+
+## 6. Over-Engineering Review
+
+| Proposal Item | Keep / Simplify / Defer | Reason |
+|---|---|---|
+| adjustment_run | Defer | Useful when an adjusted series must be reproduced. Phase 2 needs CA facts, not a run ledger. Minimum: method_version + ca_set_hash later on derived output. |
+| Full adjusted OHLCV materialization | Defer | Useful for indicator convenience. Premature while dividends UNKNOWN and Phase 2 forbids treating adjusted tape as research truth. Minimum: on-demand adjust for known splits, or don’t compute at all until architect §22.3. |
+| model_version table | Simplify | Useful for audit. Minimum: provider + model_id columns on the snapshot. Catalog of models is unused today. |
+| prompt_version table | Simplify | Useful because prompts are huge inline strings. Minimum: prompt_sha256 + stored text on the snapshot. |
+| score_version table | Simplify / Defer | Useful for /api/ask which embeds scores. /api/suggest does not. Minimum: git SHA of indicators.js. Multiple score formulas (universe vs scalp vs week) would make a single score_version misleading if introduced now. |
+| input_context_snapshot table | Simplify | The requirement is reconstructability. Minimum: JSON columns on decision_snapshot. A second table is a join with no current query load. |
+| decision_snapshot | Defer unless architect requires “why 6 months ago” in the same increment | Current product does not persist decisions. Keep the idea; do not block market schema. |
+| exchange table | Defer | EGX-only. code='EGX' + timezone constant. Yahoo meta.exchange can live on the quote. |
+| trading calendar | Simplify | Weekday Sun–Thu is already in sessionDate.js. Official holidays UNKNOWN. Minimum: weekday rule + is_open override rows when a source exists. |
+| raw payload storage | Keep as optional / license-gated | Useful for re-parse and last-vs-close disputes. Cannot be required until license go/no-go. Minimum: store hashes + source URL if blobs are forbidden. |
+| provider registry | Simplify | Four codes. Not a marketplace. |
+| version hashes | Keep in minimum form | prompt_sha256, mapping verification_class, ca_set_hash later. Do not build a generic versioning platform. |
+| universe_version / git SHA on snapshot | Simplify | Snapshot already has scraped_at + symbol list implicit in rows. Optional column, not a table. |
+| market_session table | Simplify | The real bug is overlay using Cairo today vs last CSV session. A session_date on snapshot/quote may suffice. |
+| Technical indicator / score persistence | Defer | Cheap to recompute from declared bars. Persist only if audit includes scores. |
+| Kafka / warehouse / k8s | Do not add | Correctly excluded. No repo requirement. |
+| EODHD/Twelve production ingest | Do not add | NOT TESTED; no keys. Mapping rows as DOCS only if useful. |
+
+------------------------------------------------------------------------
+
+## 7. Missing Architectural Decisions
+
+### Blocking
+
+Decisions that must exist before schema implementation:
+
+1. Store technology: PostgreSQL+JSONB vs MongoDB vs files-only vs other. Not derivable from the repo (no store exists).
+2. Canonical close for normalized quote and for analyzeQuote input: live last vs CSV close vs future official EOD. Phase 1.75 UNKNOWN; code currently uses live last as c.
+3. Phase 2 computes adjusted series vs CA storage only. Proposal §15 and §22.3 conflict in emphasis with §5/§10. Must be explicit.
+4. Duplicate CSV date policy: first row, last row, or keep both with a sequence. Unique keys cannot be designed without this. Evidence: 4–5 dups/file.
+5. Live overlay representation: two raw rows (csv + live_overlay) vs quote-level last + immutable CSV bars. Must also decide what happens when Cairo today ≠ last CSV session (append-today is current behavior).
+6. Validation failure policy: persist-raw-and-flag vs reject vs quarantine-from-indicators. Phase 1.75 requires not silently trusting invalid OHLC / change fields.
+7. License go/no-go for persisting Mubasher CSV/JSON and Yahoo JSON (and serving them from Pages/Render). UNKNOWN; blocks raw payload columns.
+8. Source of truth for universe: data/symbols.js remains canonical vs DB-first. File is what scrape uses today.
+9. Dual-write latest.json vs API-only Vue, including how Pages (market-snapshot / Mubasher scrape) and Render (PRICE_SOURCE=yahoo) stay consistent.
+10. Hosting/ops: is a managed database allowed on the current Render free web service model (render.yaml has no DB)? UNKNOWN operationally.
+11. Whether AI snapshots are in the same increment as bars. Product requirement is not in code; architect must choose.
+12. Manual CA entry policy vs wait for a licensed vendor. Only one cited split exists; jumping to a CA table without an editor/policy invites junk events.
+
+### Non-blocking
+
+1. Holiday calendar source for EGX.
+2. ISIN coverage for all 224 names (not only Twelve list / 15 EGS… overrides).
+3. Auth: remain static localStorage vs users.
+4. Equity portfolio/orders ever in-product.
+5. Prompt text retention / PII policy (user questions in /api/ask).
+6. Timezone: always +02:00 vs Africa/Cairo DST — inferred risk, not measured.
+7. Indicator freeze messaging (product vs research copy) once CA exists.
+8. Confirmation of exclusions already stated: no backtest schema, no k8s, no event bus, no EODHD/Twelve ingest without keys.
+9. Delisted/rename survivorship model (UNKNOWN from CSV; needed before Phase 4, not before adapter scaffolding).
+10. Whether KEEP_HISTORY files in output/ are imported or left as dead archive.
+
+------------------------------------------------------------------------
+
+## 8. Minimal Conceptual Architecture
+
+Smallest persistence that could satisfy Phase 2 (adapters / validation / CA-safe contract), without implementing it:
+
+RAW → NORMALIZED → CORPORATE ACTIONS → ADJUSTED → DERIVED → AI AUDIT
+
+### RAW
+
+- Belongs: vendor quote JSON (optional, license-gated); CSV text or parsed CSV OHLCV exactly as printed; Yahoo chart quote[] if used; vendor change/changePercentage labeled untrusted; scrape errors.
+- Never mix: adjusted prices, live last overwriting CSV c, indicator scores.
+- Source of truth: the provider payload for that fetch (Mubasher CSV URL / Yahoo chart body).
+- Versioning: provider, fetch scraped_at, source URL, optional payload hash. No updates in place.
+
+### NORMALIZED
+
+- Belongs: instrument id; resolved mapping; Cairo session_date; typed OHLCV from RAW; quote last as a separate field from csv_close; currency EGP; source_kind (csv | live_overlay | yahoo_chart); data_snapshot (range, price_source, error_count); fundamental_snapshot as-of; data_validation_result.
+- Never mix: CA-restated values; treating change% as computed return; treating fundamentals as same-session as prices without as-of.
+- Source of truth: RAW + mapping tables.
+- Versioning: snapshot id; mapping verification_class (TESTED | DOCS | INFERRED); do not silently remap history.
+
+### CORPORATE ACTIONS
+
+- Belongs: split/bonus/dividend/rights/unknown_discontinuity events; ex_date; ratio or cash; citation; confidence.
+- Never mix: bar patches; inferred-only jumps stored as verified splits.
+- Source of truth: cited external CA (today: COMI 1.1 2025-12-17 in Phase 1.75) plus later vendor/manual policy.
+- Versioning: event id; source/citation; confidence. Adding a CA later must not rewrite RAW.
+
+### ADJUSTED
+
+- Belongs: (later) series produced from RAW + a frozen CA set + method version.
+- Never mix: writing back into RAW; serving as the only close in the UI without an architect decision; calling it complete while dividends UNKNOWN.
+- Source of truth: RAW + CA set + method. If this layer is empty in Phase 2, that is acceptable if indicators are not claimed research-grade.
+- Versioning: method_version + ca_set_hash. Recompute, don’t update.
+
+### DERIVED
+
+- Belongs: EMA/RSI/MACD/score/depth/sector heuristics.
+- Never mix: storing derived close as market data; mixing last-trade and csv-close in one series.
+- Source of truth: a declared series_id (raw or adjusted) + analyzeQuote implementation identity (git SHA).
+- Versioning: optional. Default: recompute. Persist only for audit.
+
+### AI AUDIT
+
+- Belongs: (optional increment) insert-only record of endpoint, lang, provider, model id, prompt hash/text, input JSON actually sent, output JSON, market_scraped_at.
+- Never mix: API keys; later-rewritten candles; assuming /api/suggest and /api/ask share the same context shape.
+- Source of truth: the request/response at call time, not the current latest.json.
+- Versioning: new row per call; supersedes_id if corrections exist. No UPDATE of body.
+
+Intentionally not in this minimum: exchange table, trading calendar table, adjustment_run workflow, materialized adjusted tape, model/prompt/score catalogs, portfolio/orders, news, EGX30, backtests, dual Mongo+Postgres.
+
+------------------------------------------------------------------------
+
+## 9. Contradictions / Ambiguities
+
+1. REQUIRED NOW vs omitted from MVP tables — exchange. §5 classifies Exchange REQUIRED NOW. §21 recommended MVP tables list instrument/symbol/provider/mapping/snapshot/quote/ohlcv/CA/validation/fundamentals — no exchange. §9.1 still specifies exchange.
+
+2. REQUIRED SOON vs out of MVP — trading calendar. §5 and §9.4b: Trading Calendar REQUIRED SOON. §15: “Full holiday calendar (stub timezone + weekday rule only if needed)” is out of MVP DB.
+
+3. AI audit REQUIRED SOON vs optional increment vs omitted from MVP. §5: AI Analysis, Decision, Decision Snapshot, Model/Prompt/Score/Input Context all REQUIRED SOON. §4: snapshots only “if product claims auditability.” §15: AI snapshots “can ship immediately after ingest … otherwise second increment.” §21 MVP tables omit AI tables. Same artifact, three strengths of requirement.
+
+4. split entity vs corporate_action.type. §5: Split REQUIRED NOW as its own entity (Bonus REQUIRED SOON, Cash Dividend REQUIRED SOON, Rights FUTURE). §10 / §21: a single corporate_action with type. Duplicate classification.
+
+5. Adjusted series in vs out. §10 rule 2: indicators that need split-continuity consume adjusted series after adjustment_run. §15: computing/serving split-adjusted bars as the only series used by analyzeQuote is out of MVP; CA storage is in. §22.3 leaves the decision to the architect. The data model still includes ohlcv_bar_adjusted as if Phase 2 will materialize it (§9.8).
+
+6. Overlay description vs code. §2.1: overwrite last bar if Cairo day == today. Code also appends a today-dated live bar otherwise (mubasherQuote.js L168–169). §14 “Never drop CSV close because live last exists” is a proposed rule that current persistence already violates inside latest.json.
+
+7. Immutable snapshots vs mutable latest.json dual-write. §12: decision snapshots insert-only. §17/§18: optional dual-write continues to overwrite latest.json. If Vue keeps polling files, the file is not a snapshot; the DB row must be. Ambiguous which consumers see which close.
+
+8. Close has three meanings already. Mubasher live bar.value → quote.price / last c; Mubasher bar.close → previousClose; CSV c → discarded on overlay; Yahoo previousClose is prior candle, not meta.previousClose. §20.1 / §22.2 still open. Any schema column named close without a qualifier will conflict.
+
+9. Identity definitions. §2.1 inferred debt: “Identity is Yahoo ticker (COMI.CA) everywhere.” §9.2 proposes reuters_code as instrument field. §11 mapping treats Reuters / .CA / .EGX / ISIN as equal aliases. Canonical key is not chosen — listed as §22.6, but §9 already stores reuters_code as if it were canonical.
+
+10. yahoo: overrides called ISIN-style. §2 inferred point 1: 17 yahoo: “ISIN-like” codes. Two are EKHO.CA / EKHOA.CA (data/symbols.js L1109–1118).
+
+11. Default price source vs production. §2: PRICE_SOURCE mubasher default. render.yaml forces Yahoo for the hosted API. Pages workflow scrape uses default (Mubasher) or market-snapshot.json. “Current persistence” is not one tape.
+
+12. Missing store in §3 table. web/public/market-snapshot.json is committed and used as Pages fallback (deploy-pages.yml L35–40). Not in §3 Current Persistence Model.
+
+13. Tests: none vs informal scripts. §2: tests none found; UNKNOWN informal scripts. research/benchmark/mubasher-integrity.mjs is exactly that.
+
+14. candleCache vs full CSV. §2 inferred point 4: “full CSV is discarded except in-memory candleCache.” Cache stores range-filtered candles (mubasherQuote.js L111–123).
+
+15. Scale claim. §7: ~224 × ~25y × ~250 ≈ low millions. Sample depths vary 4.8y–25.3y (Phase 1.75 §10). 224 × 25y is an upper bound, not measured for the full universe.
+
+16. Score 0–100 vs other clamps. §5 Score: analyzeQuote 0–100. Scalp/week paths clamp to 92 (indicators.js L258, L330, L389). A single score_version cannot describe all formulas.
+
+17. decision_snapshot includes score_version_id for all endpoints. §12. /api/suggest explicitly does not send scores (server.js L759–760). FK would be null or misleading for that endpoint.
+
+18. Unique ohlcv key vs current file shape. §9.7 unique (instrument_id, provider_id, session_date, source_kind) allows csv+overlay coexistence. latest.json can hold only one last bar. Dual-write without transforming overlay will not populate both kinds.
+
+19. Phase 2 gate wording. Phase 1.75: Phase 2 must include CA handling in the data contract, not later. Proposal §15 correctly stores CA but defers adjustment-as-truth. That is consistent only if “CA handling” means storage + contract, not adjusted indicators. The document uses both senses.
+
+20. JsonlLocalAgentStore vs “no AI audit log.” §1/§12: no immutable AI audit log. server.js L33–36 writes Cursor agent JSONL under .cursor-agents/ (gitignored). Not a product audit log, but “no persistence” is slightly too strong for the Cursor path.
+
+21. Fundamentals news. §5 News FUTURE because pickFundamentals drops news. /api/company and AI fundamentalsForAi still fetch live news (server.js L144–147, L663). Snapshot model that only follows fundamentals.json will not match what /api/suggest actually sent.
+
+22. Watch interval claim. §2 table: watch every INTERVAL default 20s — true for watch.js. README still says 10s / 5s poll (stale docs, not in the proposal, but hosting docs also still say Yahoo-primary).
+
+------------------------------------------------------------------------
+
+## 10. Recommended Next Phase
+
+Do not implement schema, adapters, dual-write, or database installs.
+
+The architect should issue a short decision record that answers the Blocking list in §7, at least:
+
+- store vs files-only
+- canonical close
+- CA storage only vs adjusted materialization
+- duplicate-date and overlay representation
+- validation failure policy
+- license for raw payloads
+- whether AI audit is in increment 1
+- how Pages and Render stay on the same tape
+
+After those decisions exist, the next research/architecture step (still not production code) should be a trimmed logical model that contains only:
+
+instrument (thin) · provider mapping · data_snapshot · quote (last vs prev vs vendor change) · raw ohlcv_bar · corporate_action · data_validation_result · fundamental_snapshot
+
+…and explicitly parks adjusted tape, version catalogs, and decision snapshots as increment 2+.
+
+Optionally, a same-day identity fixture (COMI mappings + one cited split + last-vs-close example from mubasher-integrity.json) can be written as documentation to freeze semantics before any migration.
+
+Until that decision record exists, implementing PostgreSQL or Mongo would freeze unresolved meanings of close and identity into tables.
+
+------------------------------------------------------------------------
+
+FILES MODIFIED: PHASE_2A_ARCHITECTURE_VALIDATION_REPORT.txt (export only)
+
+PACKAGES CHANGED: NONE
+
+PRODUCTION CODE CHANGED: NONE

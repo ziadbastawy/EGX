@@ -6,6 +6,10 @@
   "scripts": {
     "scrape": "node src/scrape.js",
     "scrape:fundamentals": "node src/scrape-fundamentals.js",
+    "db:migrate": "node scripts/db-migrate.js",
+    "db:seed": "node scripts/db-seed.js",
+    "db:ingest-history": "node scripts/db-ingest-history.js",
+    "db:audit-quality": "node scripts/db-audit-quality.js",
     "watch": "INTERVAL=20 node src/watch.js",
     "api": "node src/server.js",
     "start": "node src/server.js",
@@ -20,6 +24,7 @@
     "@cursor/sdk": "^1.0.27",
     "cheerio": "^1.2.0",
     "dotenv": "^17.4.2",
+    "pg": "^8.23.0",
     "vue": "^3.5.13",
     "vue-router": "^4.6.4"
   },

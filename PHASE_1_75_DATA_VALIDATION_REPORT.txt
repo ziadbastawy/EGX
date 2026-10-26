@@ -1,0 +1,482 @@
+PHASE 1.75 — DATA VALIDATION & HISTORICAL INTEGRITY
+===================================================
+
+File: PHASE_1_75_DATA_VALIDATION_REPORT.txt (repo root)  
+Date of investigation: 22 August 2026  
+Evidence classes: TESTED · DOCUMENTATION VERIFIED · INFERRED · UNKNOWN  
+Production code: not modified.  
+Isolated script: research/benchmark/mubasher-integrity.mjs  
+Raw numbers: research/benchmark/out/mubasher-integrity.json
+
+------------------------------------------------------------------------
+
+Direct answers (requested)
+--------------------------
+
+| Question | Answer |
+|---|---|
+| هل historical بتاع Mubasher صالح؟ | YES WITH CONDITIONS — daily CSV exists and is deep, but not research-grade until CA + last-vs-close are handled. |
+| هل adjustment معروف؟ | PARTIALLY VERIFIED, and it is a blocker. CSV is not split-back-adjusted (COMI 1.1 on 2025-12-17). Dividends: UNKNOWN. No split/dividend flag in the file. |
+| هل EODHD أفضل؟ | NOT TESTED — no API key. لا نقدر نقول أفضل. |
+| هل Twelve Data أفضل؟ | NOT TESTED — no API key. لا نقدر نقول أفضل. |
+| هل نقدر ندخل Phase 2؟ | YES for adapters/validation design only. NO for using this history as-is in indicators, scores, or backtests across corporate actions. |
+
+Corporate-action adjustment is not skipped. Phase 0 already flagged missing split/dividend adjustment as a direct defect for indicators and historical series. Phase 1.75 confirmed that Mubasher leaves pre-split prices on the old scale. Any EMA/RSI/MACD/analyzeQuote() path that feeds on those candles will mix incompatible price levels across a split. That is a data-layer defect, not a scoring tweak.
+
+------------------------------------------------------------------------
+
+1. Executive Summary
+--------------------
+
+Authenticated EODHD and Twelve Data access does not exist in this environment. Cross-provider OHLCV comparison is not performed.
+
+Mubasher was TESTED on 16 EGX names: quote JSON + full historical CSV.
+
+- Daily history is deep (about 5–25 years depending on listing).
+- CSV OHL + volume on the last session usually match the live priceBar.
+- Live last (bar.value) often does not equal CSV close.
+- change / changePercentage do not match (last − previousClose) / previousClose for most names (12/16 percent fields fail a 0.05-point tolerance).
+- Mubasher CSVs are not split-back-adjusted at the documented COMI 1.1 split on 2025-12-17 (TESTED + DOCUMENTATION VERIFIED). Older years contain spike-then-revert rows that look like data errors, not clean adjustments.
+- Recommendation: Mubasher daily CSV can be the temporary historical foundation only with conditions. Quote change fields must not be treated as authoritative. Phase 2 adapters can start; Phase 4 backtests must not treat the series as total-return adjusted.
+
+------------------------------------------------------------------------
+
+2. Tested Providers
+-------------------
+
+| Provider | Status this phase |
+|---|---|
+| Mubasher | TESTED (quotes + CSVs, 16 symbols) |
+| EODHD | NOT TESTED — no credentials |
+| Twelve Data | NOT TESTED — no credentials |
+| Yahoo | Not re-tested (Phase 1.5: HTTP 429) |
+
+------------------------------------------------------------------------
+
+3. Authentication Status
+------------------------
+
+Safe check: process environment and repo .env / .env.local key names only.
+
+Result: no EODHD*, TWELVE*, or TWELVEDATA* variables found.
+
+Authenticated provider testing unavailable.
+
+EODHD and Twelve Data live comparison is stopped as required. Mubasher integrity work continued.
+
+------------------------------------------------------------------------
+
+4. Symbol Mapping
+-----------------
+
+| EGX Reuters | Company sleeve | Mubasher (TESTED) | Yahoo (convention, not tested here) | EODHD (docs only) | Twelve Data (Phase 1.5 list TESTED) |
+|---|---|---|---|---|---|
+| COMI | Banks | COMI | COMI.CA | COMI.EGX | EGS60121C018 |
+| ADIB | Banks | ADIB | ADIB.CA | ADIB.EGX | ISIN on EGX list |
+| SWDY | Industrials | SWDY | SWDY.CA | SWDY.EGX | ISIN |
+| FWRY | Fintech | FWRY | FWRY.CA | FWRY.EGX | ISIN |
+| EAST | Consumer | EAST | EAST.CA | EAST.EGX | ISIN |
+| ORAS | Industrials | ORAS | ORAS.CA | ORAS.EGX | ISIN |
+| ABUK | Chemicals | ABUK | ABUK.CA | ABUK.EGX | ISIN |
+| MFPC | Chemicals | MFPC | MFPC.CA | MFPC.EGX | ISIN |
+| TMGH | Real estate | TMGH | TMGH.CA | TMGH.EGX | ISIN |
+| PHDC | Real estate | PHDC | PHDC.CA | PHDC.EGX | ISIN |
+| ETEL | Telecom | ETEL | ETEL.CA | ETEL.EGX | ISIN |
+| HRHO | Financials | HRHO | HRHO.CA | HRHO.EGX | ISIN |
+| JUFO | Food | JUFO | JUFO.CA | JUFO.EGX | ISIN |
+| EFIH | Fintech | EFIH | EFIH.CA | EFIH.EGX | ISIN |
+| CIRA | Education | CIRA | CIRA.CA | CIRA.EGX | ISIN |
+| ORWE | Industrials | ORWE | ORWE.CA | ORWE.EGX | ISIN |
+| EGX30 | Index | Not on stock quote API | ^CASE30 / EGX30.CA | Docs claim indices | UNKNOWN |
+
+Mappings for EODHD/Twelve Data OHLCV were not confirmed with authenticated calls.
+
+------------------------------------------------------------------------
+
+5. Same-Date OHLCV Comparison
+-----------------------------
+
+Only Mubasher CSV is available.
+
+Trading-day policy (TESTED)
+
+| Requested date | Weekday (Africa/Cairo) | Exact CSV row (16/16) | Notes |
+|---|---|---|---|
+| 2026-08-20 | Thursday | Yes | Last cash session before this Saturday run |
+| 2026-05-20 | Wednesday | Yes | |
+| 2025-08-20 | Wednesday | Yes | |
+| 2024-08-20 | Tuesday | Yes | |
+| 2023-08-20 | Sunday | Yes | EGX week is Sun–Thu |
+| 2021-08-20 | Friday | No (0/16) | Weekend. Not substituted in tables below. Prior session in CSV is 2021-08-19 (Thursday). DOCUMENTATION VERIFIED: EGX closed Fri/Sat. |
+
+Mubasher CSV (selected names) — TESTED
+
+| Symbol | Date | Provider | Open | High | Low | Close | Volume | Timestamp |
+|---|---|---|---:|---:|---:|---:|---:|---|
+| COMI | 2026-08-20 | Mubasher CSV | 136 | 138.47 | 135.35 | 137 | 4,705,023 | date-only +02:00 parse |
+| SWDY | 2026-08-20 | Mubasher CSV | 118.11 | 120.97 | 115 | 116 | 649,885 | |
+| FWRY | 2026-08-20 | Mubasher CSV | 19 | 19.22 | 18.8 | 19.21 | 4,481,226 | |
+| EAST | 2026-08-20 | Mubasher CSV | 36 | 36.27 | 36 | 36.02 | 688,471 | |
+| TMGH | 2026-08-20 | Mubasher CSV | 97 | 97.7 | 95.51 | 97.7 | 2,176,618 | |
+| COMI | 2026-05-20 | Mubasher CSV | 133.51 | 134 | 131.54 | 131.72 | 4,259,920 | |
+| SWDY | 2026-05-20 | Mubasher CSV | 88.51 | 90.95 | 88.25 | 88.28 | 220,124 | |
+| FWRY | 2026-05-20 | Mubasher CSV | 19.43 | 19.76 | 19.2 | 19.25 | 18,468,996 | |
+| EAST | 2026-05-20 | Mubasher CSV | 40 | 39.99 | 38.77 | 39.15 | 2,206,371 | open > high (invalid OHLC) |
+| TMGH | 2026-05-20 | Mubasher CSV | 98.99 | 101.4 | 98.03 | 98.1 | 12,017,671 | |
+| COMI | 2025-08-20 | Mubasher CSV | 100.98 | 101.11 | 99.1 | 99.51 | 1,818,139 | |
+| COMI | 2024-08-20 | Mubasher CSV | 84.02 | 86.49 | 83.91 | 86.39 | 3,456,356 | |
+| COMI | 2023-08-20 | Mubasher CSV | 52.8 | 53.3 | 52.5 | 53.06 | 2,853,602 | |
+| EAST | 2023-08-20 | Mubasher CSV | 13.01 | 13.8 | 13.21 | 13.38 | 1,649,701 | open < low (invalid OHLC) |
+
+2021-08-19 (not the requested Friday) COMI CSV: O 30.45 H 30.57 L 29.61 C 30.17 V 1,250,221.
+
+Discrepancy vs other providers: none possible. Cause N/A.
+
+Mubasher vs Mubasher invalid bars on required dates: EAST 2026-05-20 and 2023-08-20. TESTED. Classification: data error or undocumented print convention — Cause not verified.
+
+------------------------------------------------------------------------
+
+6. Mubasher Quote vs CSV Analysis
+---------------------------------
+
+TESTED 22 Aug 2026 against last CSV row 2026-08-20.
+
+Production behaviour (src/lib/mubasherQuote.js → fetchMubasherQuote):
+
+- Quote: GET https://www.mubasher.info/api/1/markets/EGX/stocks/{code}
+- History: data.stocks[0].historicalFileUrl CSV
+- Parse: date, open, high, low, close, volume; first numeric token; date YYYY-MM-DD + T00:00:00+02:00
+- App overwrites the last candle when Cairo calendar day equals “today”: c = bar.value (last), OHLV from the live bar
+- bar.close is commented in code as previous close
+- change / changePercentage taken from the bar when present (no recompute)
+- Fundamentals: separate HTML scrape → fundamentals.json (overwritten; KEEP_HISTORY default off for prices too)
+- Historical persistence: latest.json only, unless KEEP_HISTORY=1
+
+| Symbol | O | H | L | Volume | Live last vs CSV close | CSV date vs updatedAt date |
+|---|---|---|---|---|---:|---|
+| COMI | match | match | match | match | 138.03 vs 137 (+1.03) | 2026-08-20 |
+| ADIB | match | match | match | match | 54.00 vs 53.42 (+0.58) | 2026-08-20 |
+| SWDY | match | match | match | match | 116.51 vs 116 (+0.51) | 2026-08-20 |
+| FWRY | match | match | match | match | 19.20 vs 19.21 (−0.01) | 2026-08-20 |
+| EAST | match | match | match | match | 36.03 vs 36.02 (+0.01) | 2026-08-20 |
+| ORAS | match | match | match | match | 757.19 vs 759 (−1.81) | 2026-08-20 |
+| ABUK | match | match | match | match | 75.86 vs 75.52 (+0.34) | 2026-08-20 |
+| MFPC | match | match | match | match | 39.12 vs 39.13 (−0.01) | 2026-08-20 |
+| TMGH | match | match | match | match | 96.54 vs 97.70 (−1.16) | 2026-08-20 |
+| PHDC | match | match | match | match | 15.13 vs 15.15 (−0.02) | 2026-08-20 |
+| ETEL | match | match | match | match | 114.63 vs 114.89 (−0.26) | 2026-08-20 |
+| HRHO | match | match | match | match | 26.25 vs 26.30 (−0.05) | 2026-08-20 |
+| JUFO | match | match | match | match | 26.71 = 26.71 | 2026-08-20 |
+| EFIH | match | match | match | match | 24.46 vs 24.50 (−0.04) | 2026-08-20 |
+| CIRA | match | match | match | match | 37.18 = 37.18 | 2026-08-20 |
+| ORWE | match | match | match | match | 25.26 vs 25.36 (−0.10) | 2026-08-20 |
+
+Pattern (TESTED): session range and volume agree; last traded (value) ≠ CSV close on 14/16 names (2 exact).
+
+Mubasher UI copy says data can be ~15 minutes late during the session (DOCUMENTATION VERIFIED on English stock pages). This run is after Thursday’s close, so delay does not fully explain last vs close.
+
+Semantic difference unresolved. Last vs official close vs VWAP: UNKNOWN. Do not assume.
+
+------------------------------------------------------------------------
+
+7. Mubasher Change Field Analysis
+---------------------------------
+
+Independent calc (TESTED):
+
+change = live.value − bar.close  
+changePercentage = change / bar.close × 100
+
+Tolerance: |Δchange| ≤ 0.02 or |Δ%| ≤ 0.05 for the percent field.
+
+| | Match | Fail |
+|---|---:|---:|
+| change vs calc | 6/16 | 10/16 |
+| changePercentage vs calc | 4/16 | 12/16 |
+
+Both fields match on: EAST, MFPC, JUFO, CIRA only.
+
+Examples (TESTED):
+
+- COMI: bar +1 / +0.74% vs calc +2.03 / +1.49%
+- ADIB: bar −0.44 / −0.82% vs calc +0.14 / +0.26% (wrong sign)
+- TMGH: bar +0.70 / +0.72% vs calc −0.46 / −0.47% (wrong sign)
+
+bar.change also does not match CSV last.close − prev.close on 0/16 names.
+
+Recommendation (do not implement here): These fields should not be treated as authoritative. Recompute from chosen close definition after that definition is chosen.
+
+App today: if bar fields exist, they are passed through (fetchMubasherQuote), so production change / changePercent inherit this error.
+
+------------------------------------------------------------------------
+
+8. Historical Integrity Analysis
+--------------------------------
+
+Sun–Thu “missing” counts include holidays (no official calendar applied). Treat as upper bound, not proven missing sessions.
+
+| Symbol | Rows | Duplicate dates | Missing Sun–Thu (approx, holidays included) | Invalid OHLC flags | Vol=0 | Px=0 / neg | Jumps ≥25% |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| COMI | 6120 | 4 | 477 | 944 | 0 | 0 | 21 |
+| ADIB | 6017 | 4 | 579 | 894 | 0 | 0 | 6 |
+| SWDY | 4859 | 5 | 426 | 975 | 0 | 0 | 8 |
+| FWRY | 1692 | 5 | 149 | 328 | 0 | 0 | 0 |
+| EAST | 5674 | 5 | 924 | 961 | 0 | 0 | 15 |
+| ORAS | 2757 | 4 | 234 | 874 | 0 | 0 | 0 |
+| ABUK | 5886 | 4 | 711 | 1161 | 0 | 0 | 12 |
+| MFPC | 2392 | 4 | 209 | 642 | 0 | 0 | 3 |
+| TMGH | 4512 | 4 | 379 | 851 | 0 | 0 | 0 |
+| PHDC | 4407 | 4 | 407 | 733 | 0 | 0 | 1 |
+| ETEL | 4990 | 4 | 415 | 795 | 0 | 0 | 7 |
+| HRHO | 6037 | 5 | 561 | 830 | 0 | 0 | 21 |
+| JUFO | 3827 | 4 | 404 | 1018 | 0 | 0 | 2 |
+| EFIH | 1157 | 4 | 109 | 188 | 0 | 0 | 1 |
+| CIRA | 3556 | 4 | 2986 | 821 | 0 | 0 | 1 |
+| ORWE | 5962 | 4 | 635 | 909 | 0 | 0 | 17 |
+
+Invalid OHLC is common: open outside high/low (sample COMI 2012). EFIH first bar 2021-10-20 already invalid (O 11.18, H 20, L 15.2).
+
+Spike-revert (TESTED, not labeled as error without CA proof): e.g. COMI 2008-01-30 C 6.44 → 2008-01-31 C 27.69 (+330%) → 2008-02-03 C 6.61. Same pattern 2008–2010 on COMI/SWDY. Cause not verified (print error / currency / split artifact all possible).
+
+Duplicates: 4–5 dates per file. Cause not verified (possible duplicate lines).
+
+CIRA ~2986 Sun–Thu gaps: INFERRED listing/halt sparsity, not verified.
+
+------------------------------------------------------------------------
+
+9. Corporate Action / Adjustment Analysis — BLOCKER
+---------------------------------------------------
+
+Do not treat this as a footnote. Unadjusted history breaks:
+
+- multi-year % returns and momentum (momentum5, scores)
+- moving averages / EMA stack / EMA200 (levels jump at split without restating history)
+- RSI/MACD (close-to-close changes include the split gap)
+- ATR and stop distances
+- any backtest that compounds CSV closes
+
+Mubasher CSV has no adjClose, no split ratio, no dividend field. TESTED.
+
+Mubasher adjustment status = PARTIALLY VERIFIED
+
+Meaning:
+
+- We verified one split event and proved the series is unadjusted there.
+- We did not verify a full CA calendar (all splits, bonuses, dividends) for the 16 names.
+- We must not upgrade that to “VERIFIED adjusted” or “safe for indicators.”
+
+Evidence: CSV is not split-back-adjusted (COMI 1.1)
+
+DOCUMENTATION VERIFIED: COMI forward split 1.1, effective 17 Dec 2025 (stockanalysis.com / Investing.com).
+
+TESTED CSV:
+
+| Date | Open | Close |
+|---|---:|---:|
+| 2025-12-16 | 118.1 | 117.5 |
+| 2025-12-17 | 106.82 | 103.8 |
+
+117.5 / 1.1 = 106.818… equals 17 Dec open. Closes before the split stay on the old scale. A split-adjusted vendor would restate 16 Dec downward. Mubasher did not.
+
+Implication for this repo: analyzeQuote() uses quote.candles[].c as a single continuous series. Across 16 Dec → 17 Dec that series contains a ~11.7% gap that is corporate action, not trading. Indicators computed on 3mo/max windows that straddle this date are not comparable to a split-adjusted series.
+
+FWRY / TMGH / ORAS: no ≥25% jumps in the scan — does not prove dividends are adjusted (many EGX dividends are smaller than 25%).
+
+SWDY / COMI 2008–2010 +300% then revert next day: not the 2025 1.1 split. Cause not verified (print error vs undocumented CA). Still unsafe to feed into returns.
+
+Dividends: UNKNOWN (absent from CSV).
+
+Required before trusting historical indicators / Phase 4: an external corporate-action table (or a vendor that supplies adj_close) applied in the normalized data layer. Mubasher will not provide this flag. This item is not deferred as optional polish.
+
+------------------------------------------------------------------------
+
+10. Historical Depth
+--------------------
+
+| Symbol | First | Last | Rows | ~Years | Complete Sun–Thu? |
+|---|---|---|---:|---:|---|
+| COMI | 2001-05-15 | 2026-08-20 | 6120 | 25.3 | No (holidays + gaps UNKNOWN mix) |
+| ADIB | 2001-05-16 | 2026-08-20 | 6017 | 25.3 | No |
+| EAST | 2001-05-15 | 2026-08-20 | 5674 | 25.3 | No |
+| ABUK | 2001-05-15 | 2026-08-20 | 5886 | 25.3 | No |
+| HRHO | 2001-05-15 | 2026-08-20 | 6037 | 25.3 | No |
+| ORWE | 2001-05-15 | 2026-08-20 | 5962 | 25.3 | No |
+| CIRA | 2001-07-31 | 2026-08-20 | 3556 | 25.1 | Sparse (large gap count) |
+| ETEL | 2005-12-08 | 2026-08-20 | 4990 | 20.7 | No |
+| SWDY | 2006-05-28 | 2026-08-20 | 4859 | 20.2 | No |
+| TMGH | 2007-11-28 | 2026-08-20 | 4512 | 18.7 | No |
+| PHDC | 2008-03-16 | 2026-08-20 | 4407 | 18.4 | No |
+| JUFO | 2010-06-09 | 2026-08-20 | 3827 | 16.2 | No |
+| ORAS | 2015-03-11 | 2026-08-20 | 2757 | 11.4 | No |
+| MFPC | 2016-09-07 | 2026-08-20 | 2392 | 10.0 | No |
+| FWRY | 2019-08-08 | 2026-08-20 | 1692 | 7.0 | No |
+| EFIH | 2021-10-20 | 2026-08-20 | 1157 | 4.8 | No |
+
+Row count ≠ completeness.
+
+------------------------------------------------------------------------
+
+11. Delisted / Renamed Handling
+-------------------------------
+
+UNKNOWN from this CSV design.
+
+- Universe is today’s data/symbols.js (~224 actives).
+- CSV is per current Mubasher code.
+- No delisted endpoint TESTED.
+- Mergers / ticker changes: UNKNOWN.
+
+Cannot build a survivorship-safe backtest universe from this feed alone.
+
+------------------------------------------------------------------------
+
+12. Fundamentals Sanity Check
+-----------------------------
+
+Source: web/public/fundamentals.json scrapedAt 2026-08-17 vs prices 2026-08-20 (TESTED stale vs tape).
+
+| | Classification |
+|---|---|
+| Revenue, net income, ROE, debt, dividends | Not provided |
+| ORAS PE | Not provided (EPS 4.04 present) |
+| MFPC EPS = 0, PE missing | Provided but suspicious |
+| Negative PE/EPS in this 16 | None TESTED |
+| Currency | Arabic “جنيه مصري” — EGP INFERRED |
+| Period (TTM vs annual) | UNKNOWN |
+| Market cap scale | Large integers; not verified vs official |
+
+------------------------------------------------------------------------
+
+13. EODHD Comparison
+--------------------
+
+NOT TESTED. No API token. Do not infer quality from marketing.
+
+------------------------------------------------------------------------
+
+14. Twelve Data Comparison
+--------------------------
+
+NOT TESTED. No API key. ISIN mapping from Phase 1.5 list is not a time-series validation.
+
+------------------------------------------------------------------------
+
+15. Data Quality Score
+----------------------
+
+Only Mubasher is scored. Untested providers = N/A.
+
+| Category | Weight | Score (0–100) | Notes |
+|---|---:|---:|---|
+| Historical integrity | 25% | 45 | Depth good; invalid OHLC, spikes, holiday-unaware gaps |
+| OHLCV accuracy | 25% | 55 | Intra-file OHL+V vs live match; last≠close; some invalid bars |
+| Corporate-action handling | 20% | 25 | Unadjusted at 2025 1.1 split; older spikes unexplained |
+| Freshness | 10% | 70 | Last session Thursday 20 Aug; post-close snapshot |
+| Fundamentals | 10% | 25 | Thin, stale, missing statements |
+| API reliability | 10% | 60 | Unofficial JSON+CSV worked 16/16 this run; no SLA |
+| Weighted | | ~46 | |
+
+------------------------------------------------------------------------
+
+16. Findings
+------------
+
+1. TESTED: Mubasher CSV is a usable daily raw-ish archive for active names.  
+2. TESTED: Live OHL+volume ≈ CSV; last ≠ close usually.  
+3. TESTED: change / changePercentage unreliable.  
+4. TESTED + DOCUMENTATION VERIFIED: COMI 1.1 split not back-adjusted.  
+5. TESTED: Extreme one-day spikes that revert — unsafe for naive returns.  
+6. TESTED: 2021-08-20 is not a trading day.  
+7. TESTED: Authenticated EODHD/Twelve Data unavailable.  
+8. UNKNOWN: Official close definition vs last.  
+9. UNKNOWN: Dividend adjustment; delisted history.
+
+------------------------------------------------------------------------
+
+17. Risks
+---------
+
+- Backtests on unadjusted prices overstate multi-year % returns across splits.  
+- Using bar.change flips sign on some names (ADIB, TMGH).  
+- Overwriting CSV close with last trade mixes two definitions in latest.json.  
+- No second vendor → cannot quantify Mubasher error vs EGX official print.  
+- Unofficial scrape can break without notice.  
+- License/redistribution: not verified.
+
+------------------------------------------------------------------------
+
+18. Conditions for Using Mubasher
+---------------------------------
+
+Allowed as temporary primary if:
+
+1. Historical bars use CSV OHLCV, not overwritten last, or last is stored as a separate field.  
+2. change / changePercentage are recomputed after choosing last vs close.  
+3. Split/dividend corporate-action table is applied outside Mubasher (or series labeled unadjusted).  
+4. Invalid OHLC and spike-revert days are quarantined.  
+5. Universe is active listings only until a symbol master exists.  
+6. A validation vendor (EODHD or Twelve Data with keys, or licensed EGX files) is added before trusting Phase 4 results.
+
+------------------------------------------------------------------------
+
+19. Phase 2 Readiness
+---------------------
+
+Phase 2 = provider adapters + validation design, not backtesting.
+
+| Prerequisite | Status |
+|---|---|
+| Temporary primary | Mubasher |
+| Trustworthy fields | CSV O/H/L/V partial; last/close ambiguous |
+| Recompute | change fields |
+| Historical representation | Daily unadjusted-leaning CSV |
+| CA adjustment | Partially known (unadjusted at one split) |
+| Validation rules | Drafted above; not implemented |
+| Abstraction must support | Reuters + .CA + ISIN + *.EGX; raw vs adjusted flag |
+
+Phase 2 (adapters + explicit raw vs adjusted fields and a CA slot) can start.  
+Phase 2 must include corporate-action handling in the data contract — not later.  
+Scoring/indicators must not be pointed at unadjusted max-history as if it were adjusted.  
+Phase 4 backtests must not start until CA policy is implemented or a validated adjusted vendor exists.
+
+------------------------------------------------------------------------
+
+20. Final Recommendation
+------------------------
+
+Keep Mubasher as temporary primary. Do not replace it with Yahoo. Do not claim EODHD/Twelve Data superiority. Obtain one paid/trial key and replay the same dates before choosing a validation source. Treat Mubasher history as unadjusted daily prints with known dirt, not as a research-grade total-return database.
+
+------------------------------------------------------------------------
+
+Phase 1.75 Final Decision
+-------------------------
+
+Mubasher Historical OHLCV
+YES WITH CONDITIONS
+
+Mubasher Quote Data
+PARTIALLY TRUSTED
+
+Mubasher Change Fields
+NOT TRUSTED
+
+Mubasher Corporate-Action Adjustment
+PARTIALLY VERIFIED
+
+EODHD
+NOT TESTED
+
+Twelve Data
+NOT TESTED
+
+Recommended Temporary Primary
+Mubasher historical CSV (OHLCV), with last vs close stored separately from the live quote.
+
+Recommended Validation Source
+Not chosen. First candidate to test once keyed: EODHD COMI.EGX vs Mubasher CSV on 2026-08-20 / 2025-08-20 / 2025-12-16–17 (split window). Alternate: Twelve Data ISIN EGS60121C018. Official EGX files if licensed.
+
+Phase 2 Ready
+YES
+
+Blocking Issues Before Phase 2
+Not blocking adapter scaffolding. Blocking if Phase 2 is interpreted as “feed current candles into scoring as historical truth.” Must carry into Phase 2 as required work, not backlog: (1) corporate-action / unadjusted series — no split-dividend flag; COMI 1.1 proven unadjusted; indicators on long windows are contaminated; (2) last vs official close unresolved; (3) change/changePercentage not authoritative; (4) no second-vendor OHLCV (EODHD/Twelve NOT TESTED); (5) no delisted/symbol-master; (6) license not verified.

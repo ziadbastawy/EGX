@@ -11,6 +11,20 @@ npm run view      # http://localhost:5173
 npm run watch     # سحب كل 10ث
 ```
 
+Optional local PostgreSQL (Phase 2D):
+
+```bash
+docker compose up -d
+# DATABASE_URL=postgresql://egx:egx@localhost:5432/egx  in .env (see .env.example)
+npm run db:migrate
+npm run db:seed
+npm run db:ingest-history -- --range 5d --limit 3
+npm run scrape              # latest.json unchanged; dual-writes DB when DATABASE_URL is set
+npm run scrape:fundamentals  # optional; same DATABASE_URL gate
+```
+
+Seed copies the listed universe from `data/symbols.js`. Without `DATABASE_URL`, scrape behavior is JSON-only.
+
 ## الهيكل
 
 ```

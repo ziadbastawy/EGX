@@ -1,5 +1,6 @@
 import { round4 } from "./utils.js";
 import { mubasherCode } from "./mubasher.js";
+import { parseCsvCandles } from "./mubasherCsv.js";
 
 const API = "https://www.mubasher.info/api/1/markets/EGX/stocks";
 const UA =
@@ -13,55 +14,6 @@ function parseNum(str) {
   if (str == null || str === "") return null;
   const m = String(str).replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
   return m ? Number(m[0]) : null;
-}
-
-function rangeStartMs(range) {
-  const now = Date.now();
-  const day = 86400000;
-  switch (String(range || "3mo")) {
-    case "5d":
-      return now - 5 * day;
-    case "1mo":
-      return now - 31 * day;
-    case "3mo":
-      return now - 93 * day;
-    case "6mo":
-      return now - 186 * day;
-    case "1y":
-      return now - 366 * day;
-    case "2y":
-      return now - 732 * day;
-    case "5y":
-      return now - 5 * 366 * day;
-    case "ytd": {
-      const d = new Date();
-      return Date.UTC(d.getUTCFullYear(), 0, 1);
-    }
-    case "max":
-      return 0;
-    default:
-      return now - 93 * day;
-  }
-}
-
-function parseCsvCandles(text, range) {
-  const start = rangeStartMs(range);
-  const candles = [];
-  for (const line of String(text || "").split(/\r?\n/)) {
-    const parts = line.split(",");
-    if (parts.length < 5) continue;
-    const datePart = parts[0].split("/")[0]; // YYYY-MM-DD
-    const t = Date.parse(`${datePart}T00:00:00+02:00`); // EGX / Cairo-ish
-    if (!Number.isFinite(t) || t < start) continue;
-    const o = parseNum(parts[1]);
-    const h = parseNum(parts[2]);
-    const l = parseNum(parts[3]);
-    const c = parseNum(parts[4]);
-    const v = parts[5] != null ? parseNum(parts[5]) : null;
-    if ([o, h, l, c].some((x) => x == null)) continue;
-    candles.push({ t, o: round4(o), h: round4(h), l: round4(l), c: round4(c), v });
-  }
-  return candles;
 }
 
 function dayKeyCairo(d = new Date()) {
@@ -139,6 +91,10 @@ export async function fetchMubasherQuote(symbol, range = "3mo", { timeoutMs = 12
   if (!histUrl) throw new Error(`No Mubasher historical CSV for ${code}`);
 
   let candles = await loadCandles(code, histUrl, range);
+  // Pre-overlay CSV bars for DB dual-write only. Overlay below is unchanged.
+  const rawCsvCandles = process.env.DATABASE_URL
+    ? candles.map((c) => ({ ...c }))
+    : null;
 
   const price = parseNum(bar.value);
   const open = parseNum(bar.open);
@@ -219,5 +175,6 @@ export async function fetchMubasherQuote(symbol, range = "3mo", { timeoutMs = 12
     candles,
     source: "mubasher",
     scrapedAt: new Date().toISOString(),
+    ...(rawCsvCandles ? { rawCsvCandles } : {}),
   };
 }

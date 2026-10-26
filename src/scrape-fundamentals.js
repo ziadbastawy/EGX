@@ -3,6 +3,8 @@ import path from "node:path";
 import { getConfig, OUTPUT_DIR, ROOT } from "./config.js";
 import { fetchMubasherStock } from "./lib/mubasher.js";
 import { isMain, sleep } from "./lib/utils.js";
+import { isDbConfigured, closePool } from "./lib/db/pool.js";
+import { persistFundamentalsRun } from "./persistence/persistFundamentalsRun.js";
 
 // Mubasher pages are heavy (~300 KB) — keep concurrency low and polite.
 const BATCH_SIZE = Number(process.env.FUND_BATCH) || 6;
@@ -88,6 +90,18 @@ export async function runScrapeFundamentals() {
   console.log(`Vue data → ${webPath}`);
   if (errors.length) console.log(`Failed: ${errors.length}`);
 
+  if (isDbConfigured()) {
+    try {
+      const db = await persistFundamentalsRun(payload);
+      console.log(
+        `PostgreSQL persist → ${db.inserted} fundamental snapshots` +
+          (db.unmatched ? ` · ${db.unmatched} unmatched` : "")
+      );
+    } catch (err) {
+      console.warn(`PostgreSQL persist failed (JSON already saved): ${err.message}`);
+    }
+  }
+
   return { payload, outPath, webPath, errors, ms };
 }
 
@@ -99,5 +113,6 @@ if (isMain(import.meta.url)) {
     .catch((err) => {
       console.error(err);
       process.exit(1);
-    });
+    })
+    .finally(() => closePool());
 }

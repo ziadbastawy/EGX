@@ -17,7 +17,7 @@ const SECTOR_RULES = [
     id: "fertilizers",
     ar: "أسمدة وكيماويات",
     en: "Fertilizers & chemicals",
-    re: /سماد|أسمدة|fertiliz|كيماو|chemic|ابوقير|افكو|مالي|/i,
+    re: /سماد|أسمدة|fertiliz|كيماو|chemic|ابوقير|افكو/i,
   },
   {
     id: "cement",
@@ -85,7 +85,25 @@ function blob(quote) {
   return [quote?.ticker, quote?.nameAr, quote?.nameEn, quote?.name].filter(Boolean).join(" ");
 }
 
+// Known sectors for EGX30 constituents — name matching is only the fallback.
+const TICKER_SECTORS = {
+  ABUK: "fertilizers", MFPC: "fertilizers", SKPC: "fertilizers",
+  ADIB: "banks", COMI: "banks",
+  BTFH: "financials", CCAP: "financials", HRHO: "financials",
+  EMFD: "real_estate", HELI: "real_estate", ORHD: "real_estate", PHDC: "real_estate", TMGH: "real_estate",
+  CLHO: "pharma", ISPH: "pharma", RMDA: "pharma",
+  EAST: "food", EFID: "food", JUFO: "food",
+  EFIH: "telecom", ETEL: "telecom", FWRY: "telecom", RAYA: "telecom",
+  ALCN: "industrials", EGAL: "industrials", GBCO: "industrials", ORAS: "industrials",
+  AMOC: "energy",
+  MCQE: "cement",
+  VLMR: "holding", VLMRA: "holding",
+};
+
 export function inferSector(quote) {
+  const code = String(quote?.ticker || "").toUpperCase().replace(/\.CA$/, "");
+  const known = TICKER_SECTORS[code] && SECTOR_RULES.find((r) => r.id === TICKER_SECTORS[code]);
+  if (known) return { id: known.id, nameAr: known.ar, nameEn: known.en };
   const text = blob(quote);
   for (const rule of SECTOR_RULES) {
     if (rule.re.test(text)) {

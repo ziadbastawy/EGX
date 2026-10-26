@@ -12,6 +12,7 @@ import {
   scanAnalyses,
 } from "./lib/indicators.js";
 import { buildCompanyProfile } from "./lib/companyContext.js";
+import { latestFlowRows, predictProba } from "./lib/flowModel.js";
 import { fetchMubasherStock } from "./lib/mubasher.js";
 import { buildPriceDepth } from "./lib/priceDepth.js";
 import { scoreThndrFunds } from "./lib/thndrFunds.js";
@@ -185,6 +186,23 @@ async function loadMarket() {
       ensureMarketData().catch(() => {});
       throw missing;
     }
+    throw err;
+  }
+}
+
+const FLOW_MODEL_PATH = path.join(ROOT, "data", "flow-model.json");
+let flowModelCache = { mtimeMs: 0, model: null };
+
+/** Cash-flow model from npm run flow:train; reloaded when the file changes. */
+async function loadFlowModel() {
+  try {
+    const stat = await fs.stat(FLOW_MODEL_PATH);
+    if (!flowModelCache.model || stat.mtimeMs !== flowModelCache.mtimeMs) {
+      flowModelCache = { mtimeMs: stat.mtimeMs, model: JSON.parse(await fs.readFile(FLOW_MODEL_PATH, "utf8")) };
+    }
+    return flowModelCache.model;
+  } catch (err) {
+    if (err.code === "ENOENT") return null;
     throw err;
   }
 }
@@ -1403,6 +1421,58 @@ const server = http.createServer(async (req, res) => {
         scrapedAt: market.scrapedAt,
         range: market.range,
         count: items.length,
+        items,
+      });
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/flow") {
+      const model = await loadFlowModel();
+      if (!model) return sendJson(res, 503, { error: "Cash-flow model not trained — run npm run flow:train" });
+      const market = await loadMarket();
+      const limit = Math.max(1, Math.min(30, Number(url.searchParams.get("limit")) || 30));
+      const byTicker = new Map(market.results.map((q) => [q.ticker, q]));
+      const rows = latestFlowRows(market.results.filter((q) => q.ticker !== "VLMR.CA"));
+      const items = rows
+        .map((r) => {
+          const q = byTicker.get(r.ticker) || {};
+          const probability = predictProba(model, r.x);
+          // Top features pushing this stock up (weight × standardised value)
+          const drivers = model.features
+            .map((f, j) => ({ feature: f, push: model.weights[j] * (((r.x[f] ?? 0) - model.mean[j]) / model.std[j]) }))
+            .filter((d) => d.push > 0.05 && !d.feature.startsWith("dow"))
+            .sort((a, b) => b.push - a.push)
+            .slice(0, 3)
+            .map((d) => d.feature);
+          return {
+            ticker: r.ticker,
+            nameAr: q.nameAr,
+            nameEn: q.nameEn,
+            session: r.d,
+            probability,
+            lift: probability / model.test.baseRate,
+            inflowToday: Boolean(r.x.inflowToday),
+            valueX: Math.exp(r.x.logValueX),
+            drivers,
+          };
+        })
+        .sort((a, b) => b.probability - a.probability)
+        .slice(0, limit);
+      return sendJson(res, 200, {
+        scrapedAt: market.scrapedAt,
+        session: items[0]?.session || null,
+        model: {
+          trainedAt: model.trainedAt,
+          target: model.target,
+          test: {
+            from: model.test.from,
+            to: model.test.to,
+            baseRate: model.test.baseRate,
+            auc: model.test.auc,
+            topK: model.test.topK,
+            precision: model.test.model.precision,
+            rulePrecision: model.test.ruleYesterdayInflow.precision,
+          },
+        },
         items,
       });
     }

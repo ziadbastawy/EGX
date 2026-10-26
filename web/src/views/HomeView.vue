@@ -1,6 +1,7 @@
 <script setup>
 import { computed, ref } from "vue";
 import AiAssistant from "../components/AiAssistant.vue";
+import FlowPanel from "../components/FlowPanel.vue";
 import StockCard from "../components/StockCard.vue";
 import { useI18n } from "../composables/useI18n.js";
 import { useMarketData } from "../composables/useMarketData.js";
@@ -58,6 +59,8 @@ function fmtDateTime(iso) {
       <AiAssistant mode="ai" :locale="locale" />
     </div>
     <p v-else class="ai-home-wait">{{ t.aiWaitingData }}</p>
+
+    <FlowPanel v-if="results.length" :locale="locale" :limit="5" />
 
     <div v-if="results.length" class="stock-search">
       <input

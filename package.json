@@ -16,7 +16,8 @@
     "view": "vite --config web/vite.config.js",
     "dev": "node scripts/dev-all.js",
     "build": "vite build --config web/vite.config.js",
-    "backtest": "node scripts/backtest.js"
+    "backtest": "node scripts/backtest.js",
+    "flow:train": "node scripts/flow-train.js"
   },
   "engines": {
     "node": ">=22.13"

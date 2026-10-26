@@ -7,6 +7,7 @@ import { useI18n } from "../composables/useI18n.js";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useAiSettings } from "../composables/useAiSettings.js";
 import { apiUrl } from "../lib/api.js";
+import { cardStats } from "../lib/cardStats.js";
 
 const props = defineProps({
   ticker: { type: String, required: true },
@@ -58,6 +59,38 @@ const trendLabel = computed(() => {
   if (!trend) return "—";
   return t.value.trend[trend] || trend;
 });
+
+const snap = computed(() => (quote.value ? cardStats(quote.value) : null));
+
+// Price position inside a low–high range, 0–100 for the marker.
+function rangePos(low, high) {
+  const p = quote.value?.price;
+  if (low == null || high == null || p == null) return null;
+  if (high === low) return 50;
+  return Math.min(100, Math.max(0, ((p - low) / (high - low)) * 100));
+}
+
+const ranges = computed(() => {
+  const s = snap.value;
+  if (!s) return [];
+  return [
+    { key: "day", label: t.value.cardDayRange, low: s.dayLow, high: s.dayHigh },
+    { key: "3m", label: t.value.card3mRange, low: s.periodLow, high: s.periodHigh },
+    { key: "1y", label: t.value.detail1yRange, low: s.yearLow, high: s.yearHigh },
+  ]
+    .map((r) => ({ ...r, pos: rangePos(r.low, r.high) }))
+    .filter((r) => r.pos != null);
+});
+
+const liquidityLabel = computed(() => {
+  const tier = analysis.value?.market?.liquidityTier;
+  return tier ? t.value.liquidityTier?.[tier] || tier : "—";
+});
+
+function signedPct(n, d = 1) {
+  if (n == null || Number.isNaN(Number(n))) return "—";
+  return `${n >= 0 ? "+" : ""}${fmt(n, d)}%`;
+}
 
 const signalLabels = computed(() => {
   const map = t.value.signal || {};
@@ -216,6 +249,62 @@ async function askAi() {
         </div>
       </section>
 
+      <section v-if="snap" class="detail-snapshot">
+        <div class="ranges">
+          <div v-for="r in ranges" :key="r.key" class="range">
+            <span class="range-k">{{ r.label }}</span>
+            <div class="range-bar" dir="ltr">
+              <span class="range-v">{{ fmt(r.low) }}</span>
+              <span class="range-track"><span class="range-dot" :style="{ left: `${r.pos}%` }" /></span>
+              <span class="range-v">{{ fmt(r.high) }}</span>
+            </div>
+          </div>
+        </div>
+
+        <dl class="snapshot-stats">
+          <div>
+            <dt>{{ t.card3m }}</dt>
+            <dd :class="(snap.periodChangePct ?? 0) >= 0 ? 'up' : 'down'">
+              <bdi dir="ltr">{{ signedPct(snap.periodChangePct) }}</bdi>
+            </dd>
+          </div>
+          <div>
+            <dt>{{ t.detail1yChange }}</dt>
+            <dd :class="(snap.yearChangePct ?? 0) >= 0 ? 'up' : 'down'">
+              <bdi dir="ltr">{{ signedPct(snap.yearChangePct) }}</bdi>
+            </dd>
+          </div>
+          <div>
+            <dt>{{ t.cardVolume }}</dt>
+            <dd>
+              {{ fmtBig(snap.volume) }}
+              <small v-if="snap.volRatio != null"><bdi dir="ltr">×{{ fmt(snap.volRatio, 1) }}</bdi></small>
+            </dd>
+          </div>
+          <div>
+            <dt>{{ t.detailAvgValue }}</dt>
+            <dd>{{ fmtBig(ind?.avgValue20) }}</dd>
+          </div>
+        </dl>
+
+        <div class="signals">
+          <span v-if="snap.trend" class="tag" :class="`trend-${snap.trend}`">
+            <span class="tag-dot" />{{ t.trend[snap.trend] || snap.trend }}
+          </span>
+          <span v-if="snap.rsi != null" class="tag" :class="{ hot: snap.rsi >= 70, cold: snap.rsi <= 30 }">
+            RSI {{ fmt(snap.rsi, 0) }}
+            <template v-if="snap.rsi >= 70"> · {{ t.cardOverbought }}</template>
+            <template v-else-if="snap.rsi <= 30"> · {{ t.cardOversold }}</template>
+          </span>
+          <span v-if="ind?.ema200 != null" class="tag" :class="quote.price >= ind.ema200 ? 'trend-up' : 'trend-down'">
+            {{ quote.price >= ind.ema200 ? t.detailAboveEma200 : t.detailBelowEma200 }}
+          </span>
+          <span v-if="analysis?.market?.liquidityTier" class="tag">
+            {{ t.indLiquidity }}: {{ liquidityLabel }}
+          </span>
+        </div>
+      </section>
+
       <!-- <PriceDepthPanel :quote="quote" :locale="locale" /> -->
 
       <section class="company-panel">
@@ -305,6 +394,7 @@ async function askAi() {
             <span class="badge">{{ scoreActionLabel }}</span>
           </div>
         </div>
+        <p v-if="analysis" class="backtest-warn">{{ t.scoreBacktestNote }}</p>
 
         <p v-if="analysisLoading" class="ai-status">{{ t.loading }}</p>
         <p v-else-if="analysisError" class="ai-error">{{ t.aiError }}: {{ analysisError }}</p>
@@ -365,7 +455,7 @@ async function askAi() {
             </div>
             <div>
               <dt>{{ t.indLiquidity }}</dt>
-              <dd>{{ analysis.market?.liquidityTier || analysis.considerations?.liquidity || "—" }}</dd>
+              <dd>{{ liquidityLabel }}</dd>
             </div>
             <div>
               <dt>EMA 20</dt>
@@ -415,7 +505,7 @@ async function askAi() {
               <dd>{{ ind?.riskReward != null ? `${fmt(ind.riskReward, 2)}:1` : "—" }}</dd>
             </div>
             <div>
-              <dt>{{ t.aiConfidence }}</dt>
+              <dt>{{ t.scoreLabel }}</dt>
               <dd>{{ analysis.score }}/100</dd>
             </div>
           </dl>

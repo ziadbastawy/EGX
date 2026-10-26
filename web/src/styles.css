@@ -502,39 +502,39 @@ html[lang="en"] .stock .name {
 .up { color: var(--up); }
 .down { color: var(--down); }
 
-.stock .ranges {
+:is(.stock, .detail-snapshot) .ranges {
   display: grid;
   gap: 8px;
 }
 
-.stock .range {
+:is(.stock, .detail-snapshot) .range {
   display: grid;
   grid-template-columns: 78px minmax(0, 1fr);
   align-items: center;
   gap: 8px;
 }
 
-.stock .range-k {
+:is(.stock, .detail-snapshot) .range-k {
   color: var(--muted);
   font-size: 0.72rem;
   font-weight: 600;
   white-space: nowrap;
 }
 
-.stock .range-bar {
+:is(.stock, .detail-snapshot) .range-bar {
   display: flex;
   align-items: center;
   gap: 8px;
 }
 
-.stock .range-v {
+:is(.stock, .detail-snapshot) .range-v {
   font-family: "IBM Plex Sans", "Cairo", sans-serif;
   font-size: 0.74rem;
   font-variant-numeric: tabular-nums;
   color: var(--muted);
 }
 
-.stock .range-track {
+:is(.stock, .detail-snapshot) .range-track {
   position: relative;
   flex: 1;
   height: 4px;
@@ -542,7 +542,7 @@ html[lang="en"] .stock .name {
   background: linear-gradient(90deg, #f0cfca, #e6e1d6 50%, #c7e6d6);
 }
 
-.stock .range-dot {
+:is(.stock, .detail-snapshot) .range-dot {
   position: absolute;
   top: 50%;
   width: 10px;
@@ -593,14 +593,14 @@ html[lang="en"] .stock .name {
 
 .stock .stock-stats dd small.hi { color: var(--accent); }
 
-.stock .signals {
+:is(.stock, .detail-snapshot) .signals {
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: auto;
 }
 
-.stock .tag {
+:is(.stock, .detail-snapshot) .tag {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -612,18 +612,18 @@ html[lang="en"] .stock .name {
   font-weight: 700;
 }
 
-.stock .tag-dot {
+:is(.stock, .detail-snapshot) .tag-dot {
   width: 6px;
   height: 6px;
   border-radius: 50%;
   background: currentColor;
 }
 
-.stock .tag.trend-up { background: #d9f0e4; color: var(--up); }
-.stock .tag.trend-down { background: #f6e0dd; color: var(--down); }
-.stock .tag.trend-sideways { background: #e7eef3; color: var(--accent); }
-.stock .tag.hot { background: #fbe9d4; color: #9a4b00; }
-.stock .tag.cold { background: #e7eef3; color: var(--accent); }
+:is(.stock, .detail-snapshot) .tag.trend-up { background: #d9f0e4; color: var(--up); }
+:is(.stock, .detail-snapshot) .tag.trend-down { background: #f6e0dd; color: var(--down); }
+:is(.stock, .detail-snapshot) .tag.trend-sideways { background: #e7eef3; color: var(--accent); }
+:is(.stock, .detail-snapshot) .tag.hot { background: #fbe9d4; color: #9a4b00; }
+:is(.stock, .detail-snapshot) .tag.cold { background: #e7eef3; color: var(--accent); }
 
 .chart-panel {
   background: var(--chart-bg);
@@ -2616,4 +2616,55 @@ canvas { width: 100%; height: 360px; display: block; }
 .backtest-warn--loss {
   border-color: color-mix(in srgb, var(--down) 40%, var(--line));
   background: #f6e0dd;
+}
+
+.detail-snapshot {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 14px 28px;
+  align-items: center;
+  margin-bottom: 18px;
+  padding: 18px 20px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.detail-snapshot .signals {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+.snapshot-stats {
+  margin: 0;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 16px;
+}
+
+.snapshot-stats dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.snapshot-stats dd {
+  margin: 2px 0 0;
+  font-family: "IBM Plex Sans", "Cairo", sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.snapshot-stats dd small {
+  margin-inline-start: 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.detail-snapshot .range { grid-template-columns: 90px minmax(0, 1fr); }
+
+@media (max-width: 780px) {
+  .detail-snapshot { grid-template-columns: minmax(0, 1fr); }
 }

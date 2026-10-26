@@ -236,6 +236,14 @@ const messages = {
     weekBacktestWarn:
       "ملاحظة: في نفس الاختبار، خطة الأسبوع كسبت في المتوسط ‎+0.2%‎ للصفقة بعد العمولات (نجاح 41%) — أقل من مجرد الاحتفاظ بأي سهم من EGX30 لمدة أسبوع (‎+0.7%‎).",
     scoreLabel: "التقييم",
+    scoreBacktestNote:
+      "التقييم ده قواعد فنية ثابتة. في اختبار تاريخي على EGX30 (2020–2026) نسبة نجاحه حوالي 50% في كل المستويات — بيفرز الأسهم الضعيفة لكن مش بيتنبأ بالأسهم الرابحة. استخدمه كمؤشر مش كتوصية.",
+    detail1yRange: "نطاق سنة",
+    detail1yChange: "تغير سنة",
+    detailAvgValue: "متوسط قيمة التداول (20 يوم)",
+    detailAboveEma200: "فوق EMA200",
+    detailBelowEma200: "تحت EMA200",
+    liquidityTier: { high: "عالية", mid: "متوسطة", low: "ضعيفة", unknown: "غير معروفة" },
     aiCardConfidence: "تقدير AI",
     nowPrice: "السعر الآن",
     aiAction: {
@@ -337,7 +345,7 @@ const messages = {
     indRR: "عائد/مخاطرة",
     indSector: "القطاع",
     indRsMarket: "مقابل السوق",
-    indLiquidity: "سيولة نسبية",
+    indLiquidity: "السيولة (قيمة التداول)",
     indReasons: "اعتبارات القرار",
     trend: {
       up: "صاعد",
@@ -606,6 +614,14 @@ const messages = {
     weekBacktestWarn:
       "Note: in the same backtest, the week plan made +0.2% per trade on average after fees (41% win rate) — less than simply holding any EGX30 stock for a week (+0.7%).",
     scoreLabel: "Score",
+    scoreBacktestNote:
+      "This score is fixed technical rules. In a backtest on EGX30 (2020–2026) its hit rate was about 50% at every level — it filters out weak stocks but does not predict winners. Treat it as an indicator, not a recommendation.",
+    detail1yRange: "1Y range",
+    detail1yChange: "1Y change",
+    detailAvgValue: "Avg traded value (20d)",
+    detailAboveEma200: "Above EMA200",
+    detailBelowEma200: "Below EMA200",
+    liquidityTier: { high: "High", mid: "Medium", low: "Low", unknown: "Unknown" },
     aiCardConfidence: "AI estimate",
     nowPrice: "Now",
     aiAction: {
@@ -706,7 +722,7 @@ const messages = {
     indRR: "Reward / risk",
     indSector: "Sector",
     indRsMarket: "vs market",
-    indLiquidity: "Rel. liquidity",
+    indLiquidity: "Liquidity (traded value)",
     indReasons: "Decision factors",
     trend: {
       up: "Up",

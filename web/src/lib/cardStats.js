@@ -60,8 +60,15 @@ export function cardStats(quote) {
   const lows = recent.map((c) => c.l ?? c.c);
   const highs = recent.map((c) => c.h ?? c.c);
 
+  // Full loaded history (≈ 1 year with RANGE=1y) for the detail page.
+  const yearFirst = closes[0];
+  const yearChangePct = yearFirst && price != null ? ((price - yearFirst) / yearFirst) * 100 : null;
+
   return {
     closes: recentCloses,
+    yearChangePct,
+    yearLow: candles.length ? Math.min(...candles.map((c) => c.l ?? c.c)) : null,
+    yearHigh: candles.length ? Math.max(...candles.map((c) => c.h ?? c.c)) : null,
     trend,
     rsi: rsiLast(closes),
     volume,
